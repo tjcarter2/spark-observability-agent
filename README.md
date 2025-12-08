@@ -50,7 +50,7 @@ iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. Y
 
 ## EMR specific caveat
 
-For best accuracy and performance for the EMR spark observability profiler, we recommend settting the spark configs AWS recommends here (https://docs.aws.amazon.com/emr/latest/ManagementGuide/app-history-spark-UI.html) to allow for efficient parsing of large event logs.
+For best accuracy and performance for the EMR spark observability profiler, we recommend settting the spark configs AWS recommends here (https://docs.aws.amazon.com/emr/latest/ManagementGuide/app-history-spark-UI.html) to allow for efficient parsing of large event logs. Also note that the persistent spark UI can only be leveraged when raw spark logs are written to HDFS (the default behavior for EMR). If they are written to s3 or elsewhere, the script will not work. 
 
 ## Contribution Guide
 
