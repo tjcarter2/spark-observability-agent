@@ -5,18 +5,18 @@
 - Creates LLM tools to facilitate performance optimization via natural language interface with frontier model.
 - Designed for scalable, multi-cluster profiling to aid performance tuning.
 
-# Spark Observability Profiler
+## Spark Observability Profiler
 
 The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs. The second framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model. 
 
-Framework One– Scalable ETL + Genie
+### Framework One– Scalable ETL + Genie
 
 Implementation steps (estimated about 15 minutes for secret creation and then minutes to hours for the ETL depending on how many terminated spark clusters are associated with your workspace)
 
-Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to extract spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
-Run databricks_spark_profiler or emr_spark_profiler (depending on which system you want to extract spark history server metric from)
-Run efficiency_analysis
-Run emr_photon_analysis (if you want to determine which EMR jobs are most likely to benefit from photon)
+- Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to extract spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
+- Run databricks_spark_profiler or emr_spark_profiler (depending on which system you want to extract spark history server metric from)
+- Run efficiency_analysis
+- Run emr_photon_analysis (if you want to determine which EMR jobs are most likely to benefit from photon)
 
 After implementation steps are complete you should see the following tables within your sink schema:
 Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
@@ -27,12 +27,12 @@ What are my most inefficient spark jobs?
 What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
-Framework Two– LLM Tools + live data fetching 
+### Framework Two– LLM Tools + live data fetching 
 
 Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
 
-Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
-Run agentconnprod and agentddlprod
+- Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
+- Run agentconnprod and agentddlprod
 
 After implementation steps are complete you should see the following tools/UDFs within your sink schema:
 Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
