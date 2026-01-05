@@ -1,4 +1,4 @@
-### Key Features
+## Key Features
 - Discovers EMR or Databricks clusters and reads Spark history data.
 - Extracts and processes application, job, stage, and SQL query metrics.
 - Produces Spark DataFrames for further analysis and optional S3 output.
@@ -43,7 +43,7 @@ What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 What spark configs did I leverage for cluster_id {{cluster_id}}?
 
-### Databricks Permissions
+## Databricks Permissions
 
 i) Generate a Databricks access token then create a secret for both token and workspace URL.
 
@@ -51,7 +51,7 @@ ii) Create a secret for data plane URL. You can find the data plane URL by navig
 
 iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. You can find the DATAPLANE_DOMAIN_DBAUTH cookie by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the DATAPLANE_DOMAIN_DBAUTH cookie that you see when opening the 'inspect' devtools and navigating to application tab.
 
-### Configurable Environment Variables Databricks ETL
+## Configurable Environment Variables Databricks ETL
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
 - **`max_applications`**: Maximum number of applications to analyze per cluster.
 - **`environment`**: Set to `dev` or `prod`.
@@ -66,7 +66,7 @@ iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. Y
 
 Note that for our own internal runs, we set env to prod and keep all the defaults.
 
-### AWS IAM Permissions
+## AWS IAM Permissions
 *   **elasticmapreduce**:
     *   `ListClusters`
     *   `DescribeCluster`
@@ -83,7 +83,7 @@ Note that for our own internal runs, we set env to prod and keep all the default
 *   **sts**:
     *   `GetCallerIdentity`
 
-### Configurable Environment Variables EMR ETL
+## Configurable Environment Variables EMR ETL
 - **`aws_region`**: AWS region (e.g., `us-east-1`).
 - **`emr_cluster_arn`**: Specify a cluster ARN, or leave blank to auto-discover.
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
@@ -98,7 +98,7 @@ Note that for our own internal runs, we set env to prod and keep all the default
 - **`max_cluster_threads`**: Maximum number of concurrent clusters to analyze.
 - **`max_app_threads`**: Maximum number of concurrent application analyses per cluster.
 
-### EMR specific caveat
+## EMR specific caveat
 
 For best accuracy and performance for the EMR spark observability profiler, we recommend settting the spark configs AWS recommends here (https://docs.aws.amazon.com/emr/latest/ManagementGuide/app-history-spark-UI.html) to allow for efficient parsing of large event logs. Also note that the persistent spark UI can only be leveraged when raw spark logs are written to HDFS (the default behavior for EMR). If they are written to s3 or elsewhere, the script will not work. 
 
