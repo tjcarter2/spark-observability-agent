@@ -1,12 +1,70 @@
-# Spark Observability Profiler
-
-This script analyzes EMR and Databricks Spark cluster performance by extracting metrics from the Spark History Server. It automatically discovers clusters (or uses a provided ARN), connects to their history UIs, collects application, job, stage, and query details, and generates Spark DataFrames (or writes to S3) for performance analysis and optimization.
-
 ### Key Features
 - Discovers EMR or Databricks clusters and reads Spark history data.
 - Extracts and processes application, job, stage, and SQL query metrics.
 - Produces Spark DataFrames for further analysis and optional S3 output.
+- Creates LLM tools to facilitate performance optimization via natural language interface with frontier model.
 - Designed for scalable, multi-cluster profiling to aid performance tuning.
+
+# Spark Observability Profiler
+
+The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs. The second framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model. 
+
+Framework One– Scalable ETL + Genie
+
+Implementation steps (estimated about 15 minutes for secret creation and then minutes to hours for the ETL depending on how many terminated spark clusters are associated with your workspace)
+
+Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to extract spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
+Run databricks_spark_profiler or emr_spark_profiler (depending on which system you want to extract spark history server metric from)
+Run efficiency_analysis
+Run emr_photon_analysis (if you want to determine which EMR jobs are most likely to benefit from photon)
+
+After implementation steps are complete you should see the following tables within your sink schema:
+Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
+
+You can now reference these tables for traditional SQL analysis. Further you can create a genie room that references the tables in the sink schema for text to SQL analysis. Some example questions the Genie can address include:
+
+What are my most inefficient spark jobs?
+What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+
+Framework Two– LLM Tools + live data fetching 
+
+Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
+
+Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
+Run agentconnprod and agentddlprod
+
+After implementation steps are complete you should see the following tools/UDFs within your sink schema:
+Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
+
+You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
+
+What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+What spark configs did I leverage for cluster_id {{cluster_id}}?
+
+## Databricks Permissions
+
+i) Generate a Databricks access token then create a secret for both token and workspace URL.
+
+ii) Create a secret for data plane URL. You can find the data plane URL by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the URL in the top navbar (should contain dp-)
+
+iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. You can find the DATAPLANE_DOMAIN_DBAUTH cookie by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the DATAPLANE_DOMAIN_DBAUTH cookie that you see when opening the 'inspect' devtools and navigating to application tab.
+
+## Configurable Environment Variables Databricks ETL
+- **`timeout_seconds`**: Timeout for requests (default: `300`).
+- **`max_applications`**: Maximum number of applications to analyze per cluster.
+- **`environment`**: Set to `dev` or `prod`.
+- **`catalog_name`**: Catalog (required).
+- **`schema_name`**: Set explictly, or default is spark_observability.
+- **`volume_name`**: Set explictly, or default is profiler_logs_volume.
+- **`max_clusters`**: Maximum number of clusters to analyze (default: `5`).
+- **`batch_size`**: Clusters to process concurrently (default `10`)
+- **`batch_delay_seconds`**: Delay Between Batches (default `2`).
+- **`max_endpoint_failures`**: Max Endpoint Failures per Endpoint Type (default `3`).
+- **`include_tasks`**: Set to true if you want to include task level metrics (defult false).
+
+Note that for our own internal runs, we set env to prod and keep all the defaults.
 
 ## AWS IAM Permissions
 *   **elasticmapreduce**:
@@ -25,15 +83,7 @@ This script analyzes EMR and Databricks Spark cluster performance by extracting 
 *   **sts**:
     *   `GetCallerIdentity`
 
-## Databricks Permissions
-
-i) Create a secret for token and then fetch token in code (in this example we leverage dbutils with secret scope shscreds but you can name these whatever)
-
-ii) Create a secret for data plane URL and then fetch token in code. You can find the data plane URL by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the URL in the top navbar (should contain dp-)
-
-iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. You can find the DATAPLANE_DOMAIN_DBAUTH cookie by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the DATAPLANE_DOMAIN_DBAUTH cookie that you see when opening the 'inspect' devtools and navigating to application tab. 
-
-## Configurable Environment Variables
+## Configurable Environment Variables EMR ETL
 - **`aws_region`**: AWS region (e.g., `us-east-1`).
 - **`emr_cluster_arn`**: Specify a cluster ARN, or leave blank to auto-discover.
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
