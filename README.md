@@ -21,11 +21,11 @@ After implementation steps are complete you should see the following tools/UDFs 
 
 You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
 
-What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+i) What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 
-What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+ii) What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
-What spark configs did I leverage for cluster_id {{cluster_id}}?
+iii) What spark configs did I leverage for cluster_id {{cluster_id}}?
 
 <img width="938" height="705" alt="pguno" src="https://github.com/user-attachments/assets/942bd3a5-62c7-483e-b148-a391ae862841" />
 
@@ -49,11 +49,11 @@ After implementation steps are complete you should see the following tables with
 
 You can now reference these tables for traditional SQL analysis. Further you can create a genie room that references the tables in the sink schema for text to SQL analysis. Some example questions the Genie can address include:
 
-What are my most inefficient spark jobs?
+i) What are my most inefficient spark jobs?
 
-What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+ii) What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 
-What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+iii) What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
 <img width="1257" height="619" alt="genieuno" src="https://github.com/user-attachments/assets/bc6861f3-f209-40b8-8733-7e98d7c25306" />
 
