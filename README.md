@@ -16,6 +16,8 @@ Implementation steps (estimated about 15 minutes for secret creation and helper 
 - Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
 - Run agentconnprod and agentddlprod
 
+<img width="1073" height="504" alt="shsutils" src="https://github.com/user-attachments/assets/1313520b-f9cc-4bbe-ae81-77b3d26413b7" />
+
 After implementation steps are complete you should see the following tools/UDFs within your sink schema:
 - Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
 
@@ -41,8 +43,6 @@ Implementation steps (estimated about 15 minutes for secret creation and then mi
 - Run databricks_spark_profiler or emr_spark_profiler (depending on which system you want to extract spark history server metric from)
 - Run efficiency_analysis
 - Run emr_photon_analysis (if you want to determine which EMR jobs are most likely to benefit from photon)
-
-<img width="1073" height="504" alt="shsutils" src="https://github.com/user-attachments/assets/1313520b-f9cc-4bbe-ae81-77b3d26413b7" />
 
 After implementation steps are complete you should see the following tables within your sink schema:
 - Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
