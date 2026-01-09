@@ -18,6 +18,8 @@ Implementation steps (estimated about 15 minutes for secret creation and then mi
 - Run efficiency_analysis
 - Run emr_photon_analysis (if you want to determine which EMR jobs are most likely to benefit from photon)
 
+<img width="1073" height="504" alt="shsutils" src="https://github.com/user-attachments/assets/1313520b-f9cc-4bbe-ae81-77b3d26413b7" />
+
 After implementation steps are complete you should see the following tables within your sink schema:
 Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
 
@@ -26,6 +28,12 @@ You can now reference these tables for traditional SQL analysis. Further you can
 What are my most inefficient spark jobs?
 What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+
+<img width="1257" height="619" alt="genieuno" src="https://github.com/user-attachments/assets/bc6861f3-f209-40b8-8733-7e98d7c25306" />
+
+<img width="1258" height="628" alt="geniedos" src="https://github.com/user-attachments/assets/2b1e1662-3db8-4d1b-83ed-a21986ef5545" />
+
+<img width="1268" height="545" alt="genietres" src="https://github.com/user-attachments/assets/a16c8e6e-c557-4c2f-9767-376888095456" />
 
 #### Framework Two– LLM Tools + live data fetching 
 
@@ -43,6 +51,13 @@ What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 What spark configs did I leverage for cluster_id {{cluster_id}}?
 
+<img width="938" height="705" alt="pguno" src="https://github.com/user-attachments/assets/942bd3a5-62c7-483e-b148-a391ae862841" />
+
+<img width="879" height="702" alt="pgdos" src="https://github.com/user-attachments/assets/0c18beef-ada9-4ec7-865b-db8d5c51df64" />
+
+<img width="961" height="700" alt="pgtres" src="https://github.com/user-attachments/assets/51f0e244-5670-4de5-bd96-1087a3a28913" />
+
+
 ## Databricks Permissions
 
 i) Generate a Databricks access token then create a secret for both token and workspace URL.
@@ -50,6 +65,8 @@ i) Generate a Databricks access token then create a secret for both token and wo
 ii) Create a secret for data plane URL. You can find the data plane URL by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the URL in the top navbar (should contain dp-)
 
 iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. You can find the DATAPLANE_DOMAIN_DBAUTH cookie by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the DATAPLANE_DOMAIN_DBAUTH cookie that you see when opening the 'inspect' devtools and navigating to application tab.
+
+<img width="1486" height="751" alt="dpurl" src="https://github.com/user-attachments/assets/c55f144e-da28-4275-a06d-9144b32921be" />
 
 ## Configurable Environment Variables Databricks ETL
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
