@@ -5,7 +5,7 @@
 - Creates LLM tools to facilitate performance optimization via natural language interface with frontier model.
 - Designed for scalable, multi-cluster profiling to aid performance tuning.
 
-## Spark Observability Profiler
+## Spark Observability Agent
 
 The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs. The second framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model. 
 
