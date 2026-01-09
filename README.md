@@ -9,7 +9,29 @@
 
 The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs. The second framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model. 
 
-#### Framework One– Scalable ETL + Genie
+#### Framework One– LLM Tools + live data fetching 
+
+Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
+
+- Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
+- Run agentconnprod and agentddlprod
+
+After implementation steps are complete you should see the following tools/UDFs within your sink schema:
+Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
+
+You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
+
+What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+What spark configs did I leverage for cluster_id {{cluster_id}}?
+
+<img width="938" height="705" alt="pguno" src="https://github.com/user-attachments/assets/942bd3a5-62c7-483e-b148-a391ae862841" />
+
+<img width="879" height="702" alt="pgdos" src="https://github.com/user-attachments/assets/0c18beef-ada9-4ec7-865b-db8d5c51df64" />
+
+<img width="961" height="700" alt="pgtres" src="https://github.com/user-attachments/assets/51f0e244-5670-4de5-bd96-1087a3a28913" />
+
+#### Framework Two– Scalable ETL + Genie
 
 Implementation steps (estimated about 15 minutes for secret creation and then minutes to hours for the ETL depending on how many terminated spark clusters are associated with your workspace)
 
@@ -34,29 +56,6 @@ What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 <img width="1258" height="628" alt="geniedos" src="https://github.com/user-attachments/assets/2b1e1662-3db8-4d1b-83ed-a21986ef5545" />
 
 <img width="1268" height="545" alt="genietres" src="https://github.com/user-attachments/assets/a16c8e6e-c557-4c2f-9767-376888095456" />
-
-#### Framework Two– LLM Tools + live data fetching 
-
-Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
-
-- Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
-- Run agentconnprod and agentddlprod
-
-After implementation steps are complete you should see the following tools/UDFs within your sink schema:
-Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
-
-You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
-
-What stages are causing bottlenecks for cluster_id {{cluster_id}}?
-What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
-What spark configs did I leverage for cluster_id {{cluster_id}}?
-
-<img width="938" height="705" alt="pguno" src="https://github.com/user-attachments/assets/942bd3a5-62c7-483e-b148-a391ae862841" />
-
-<img width="879" height="702" alt="pgdos" src="https://github.com/user-attachments/assets/0c18beef-ada9-4ec7-865b-db8d5c51df64" />
-
-<img width="961" height="700" alt="pgtres" src="https://github.com/user-attachments/assets/51f0e244-5670-4de5-bd96-1087a3a28913" />
-
 
 ## Databricks Permissions
 
