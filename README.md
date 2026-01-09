@@ -17,12 +17,14 @@ Implementation steps (estimated about 15 minutes for secret creation and helper 
 - Run agentconnprod and agentddlprod
 
 After implementation steps are complete you should see the following tools/UDFs within your sink schema:
-Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
+- Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
 
 You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
 
 What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
+
 What spark configs did I leverage for cluster_id {{cluster_id}}?
 
 <img width="938" height="705" alt="pguno" src="https://github.com/user-attachments/assets/942bd3a5-62c7-483e-b148-a391ae862841" />
@@ -43,12 +45,14 @@ Implementation steps (estimated about 15 minutes for secret creation and then mi
 <img width="1073" height="504" alt="shsutils" src="https://github.com/user-attachments/assets/1313520b-f9cc-4bbe-ae81-77b3d26413b7" />
 
 After implementation steps are complete you should see the following tables within your sink schema:
-Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
+- Applications, cluster_summaries, executors, ineffjobagg, ineffjobraw, jobs, photonanalysis, sql, stages, task_summaries, tasks
 
 You can now reference these tables for traditional SQL analysis. Further you can create a genie room that references the tables in the sink schema for text to SQL analysis. Some example questions the Genie can address include:
 
 What are my most inefficient spark jobs?
+
 What stages are causing bottlenecks for cluster_id {{cluster_id}}?
+
 What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
 <img width="1257" height="619" alt="genieuno" src="https://github.com/user-attachments/assets/bc6861f3-f209-40b8-8733-7e98d7c25306" />
