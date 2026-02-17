@@ -61,15 +61,32 @@ iii) What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
 <img width="1268" height="545" alt="genietres" src="https://github.com/user-attachments/assets/a16c8e6e-c557-4c2f-9767-376888095456" />
 
-## Databricks Permissions
+## Databricks Authentication Setup
 
-i) Generate a Databricks access token then create a secret for both token and workspace URL.
+You'll need to create secrets for four values to authenticate with Databricks.
 
-ii) Create a secret for data plane URL. You can find the data plane URL by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the URL in the top navbar (should contain dp-)
+### 1. Access Token & Workspace URL
 
-iii) Create a secret for DATAPLANE_DOMAIN_DBAUTH and then fetch token in code. You can find the DATAPLANE_DOMAIN_DBAUTH cookie by navigating to the spark UI for any completed job, clicking 'open in new tab' and then copying the DATAPLANE_DOMAIN_DBAUTH cookie that you see when opening the 'inspect' devtools and navigating to application tab.
+- Generate a Databricks **personal access token (PAT)** from your workspace settings (`User Settings > Developer > Access Tokens`).
+- Create a secret for the **access token**.
+- Create a secret for your **workspace URL** (e.g., `https://<your-workspace>.cloud.databricks.com`).
 
-<img width="1486" height="751" alt="dpurl" src="https://github.com/user-attachments/assets/c55f144e-da28-4275-a06d-9144b32921be" />
+### 2. Data Plane URL
+
+1. Navigate to any **completed job** in your workspace.
+2. Open the **Spark UI** and click **"Open in new tab"**.
+3. Copy the URL from the browser address bar — it should contain `dp-` in the hostname.
+4. Create a secret for this URL - ending with `.com`.
+
+### 3. Data Plane Auth Cookie (`DATAPLANE_DOMAIN_DBAUTH`)
+
+1. From the same Spark UI tab opened in Step 2:
+   - Open browser **DevTools** (`F12` or `Cmd+Option+I`).
+   - Go to the **Application** tab → **Cookies**.
+   - Find and copy the value of the `DATAPLANE_DOMAIN_DBAUTH` cookie.
+2. Create a secret for this value.
+
+<img width="2559" height="1367" alt="AuthInstructions" src="https://github.com/user-attachments/assets/03b5ea74-e6bf-481b-bf17-7e3db3f0ea7e" />
 
 ## Configurable Environment Variables Databricks ETL
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
