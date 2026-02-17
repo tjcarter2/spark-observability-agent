@@ -9,7 +9,7 @@
 
 The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model.  The second framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs.
 
-#### Framework One– LLM Tools + live data fetching 
+### Framework One– LLM Tools + live data fetching 
 
 Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
 
@@ -35,7 +35,7 @@ iii) What spark configs did I leverage for cluster_id {{cluster_id}}?
 
 <img width="961" height="700" alt="pgtres" src="https://github.com/user-attachments/assets/51f0e244-5670-4de5-bd96-1087a3a28913" />
 
-#### Framework Two– Scalable ETL + Genie
+### Framework Two– Scalable ETL + Genie
 
 Implementation steps (estimated about 15 minutes for secret creation and then minutes to hours for the ETL depending on how many terminated spark clusters are associated with your workspace)
 
