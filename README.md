@@ -7,21 +7,21 @@
 
 ## Spark Observability Agent
 
-The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails leveraging the tools defined in AgentDDLProd to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model.  The second framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs.
+The ETL scripts and LLM tools/UDFs in this package consolidate and expose spark history server metric data so that they can be leveraged by traditional SQL analysts and LLMs. There are two different frameworks for leveraging this solution. The first framework entails leveraging the tools defined in LLMToolsDbx to ‘live fetch’ spark history server metrics for a specific spark cluster. This framework is preferable if you want to conduct deep dive analysis for a small number of spark jobs via a natural language interface with a frontier model.  The second framework entails running an ETL script on a consistent cadence and analyzing the spark history server metric data with traditional SQL analysis or a Databricks Genie Room. This framework is preferable if you want to analyze performance across dozens or hundreds of spark jobs.
 
 ### Framework One– LLM Tools + live data fetching 
 
 Implementation steps (estimated about 15 minutes for secret creation and helper script execution)
 
 - Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (if you want to live fetch spark history server metrics for Databricks spark jobs, feel free to use shsutils helper)
-- Run agentconnprod and agentddlprod
+- Run UpstreamConnectionsDbx, UpstreamFunctionsDbx, and LLMToolsDbx
 
 <img width="1073" height="504" alt="shsutils" src="https://github.com/user-attachments/assets/1313520b-f9cc-4bbe-ae81-77b3d26413b7" />
 
 After implementation steps are complete you should see the following tools/UDFs within your sink schema:
-- Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw
+- Getappid, getexecutor, getslowestjobs, getslowestsql, getsloweststages, getsparkcontext, getstage, listappsraw, listshsenvraw, listshsexeuctorsraw, listshsjobsraw, listshssqlraw, listshsstagesraw, listshstasksraw, sqlmetrics, jobmetrics, stagemetrics, taskmetrics, photonmetrics
 
-You can now reference these tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
+You can now reference the metric tools via Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
 
 i) What stages are causing bottlenecks for cluster_id {{cluster_id}}?
 
