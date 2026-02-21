@@ -88,6 +88,37 @@ iii) What sql queries are causing bottlenecks for cluster_id {{cluster_id}}?
 
 <img width="1268" height="545" alt="genietres" src="https://github.com/user-attachments/assets/a16c8e6e-c557-4c2f-9767-376888095456" />
 
+### Framework Three– Custom Agent + Photon Compatibility Analysis
+
+Implementation steps (estimated about 15-30 minutes)
+
+- Create secrets in your databricks workspace for token, workspace URL, dataplane URL, and cookies (feel free to use shsutils helper and reference Databricks permissions section in part one of blog)
+- Run UpstreamConnectionsDbx, UpstreamFunctionsDbx, LLMToolsDbx to analyze Databricks jobs and UpstreamFunctionsEmr and LLMToolsEmr to analyze EMR jobs 
+- Run CustomNotebookDbx to analyze Databricks jobs and CustomNotebookAgentEmr to analyze EMR jobs
+
+
+You can now deploy the Custom Agent via the Databricks AI playground, or some other open source interface. Some example questions the frontier models can address include:
+
+i) I need help tuning a spark job. Please fetch node execution metrics for cluster id {{clusterid}} and provide tuning recommendations, thanks!
+
+ii) Based on the execution metrics, what % of agg runtime would you expect to fall within photon? What cost/perf improvements should be expected?
+
+iii) Based on the execution metrics, how would this job on databricks photon compare to amazon EMR? What cost/perf improvements should be expected? 
+
+<img width="871" height="485" alt="photonmodel" src="https://github.com/user-attachments/assets/f1f19695-4f77-46f2-850a-b691a06a6c8c" />
+
+<img width="846" height="226" alt="photonsummary" src="https://github.com/user-attachments/assets/5e878e20-9206-4a9a-8ca3-5a3c11437764" />
+
+<img width="902" height="675" alt="emrpromptpng" src="https://github.com/user-attachments/assets/34ca25be-715b-4c5d-80cc-3e028d7ebfb4" />
+
+<img width="843" height="378" alt="sidebyside" src="https://github.com/user-attachments/assets/dd652c82-a53b-4dde-b8ca-7a7d295bc83f" />
+
+<img width="852" height="492" alt="senan" src="https://github.com/user-attachments/assets/e9b9933d-9e35-46d4-8a84-4f1a3a12d0e9" />
+
+<img width="845" height="417" alt="tco" src="https://github.com/user-attachments/assets/3dc7bbeb-aa9b-4f50-8250-5d5b0d8827e8" />
+
+<img width="852" height="563" alt="bl" src="https://github.com/user-attachments/assets/cde14de9-2004-4398-9faf-e715a4733ac2" />
+
 ## Configurable Environment Variables Databricks ETL
 - **`timeout_seconds`**: Timeout for requests (default: `300`).
 - **`max_applications`**: Maximum number of applications to analyze per cluster.
