@@ -1,0 +1,6 @@
+Hi i need help tuning a spark job. please fetch node execution metrics for cluster id {{clusterid}} and provide tuning recommendations, thanks!
+
+Based on the execution metrics, what % of agg runtime would you expect to fall within photon? What cost/perf improvements should be expected?
+
+Based on the execution metrics, how would this job on databricks photon compare to amazon EMR? What cost/perf improvements should be expected? 
+
