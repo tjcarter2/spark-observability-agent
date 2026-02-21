@@ -18,11 +18,6 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -U -qqqq backoff databricks-openai uv databricks-agents mlflow-skinny[databricks]
-# MAGIC dbutils.library.restartPython()
-
-# COMMAND ----------
-
 dbutils.widgets.text("catalog_name", "", "Catalog (required)")
 dbutils.widgets.text("schema_name", "", "Schema")
 CATALOG_NAME = dbutils.widgets.get("catalog_name").strip()
@@ -32,7 +27,18 @@ SCHEMA_NAME = dbutils.widgets.get("schema_name").strip() or "spark_observability
 if not CATALOG_NAME:
     raise ValueError("catalog widget must point to an existing catalog")
 
+# Set environment variables for agent.py to use
+import os 
+
+os.environ["CATALOG_NAME"] = CATALOG_NAME
+os.environ["SCHEMA_NAME"] = SCHEMA_NAME
+
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}")
+
+# COMMAND ----------
+
+# MAGIC %pip install -U -qqqq backoff databricks-openai uv databricks-agents mlflow-skinny[databricks]
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -54,6 +60,7 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}")
 # MAGIC from typing import Any, Callable, Generator, Optional
 # MAGIC from uuid import uuid4
 # MAGIC import warnings
+# MAGIC import os
 # MAGIC
 # MAGIC import backoff
 # MAGIC import mlflow
@@ -79,6 +86,10 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}")
 # MAGIC LLM_ENDPOINT_NAME = "databricks-claude-opus-4-6"
 # MAGIC
 # MAGIC SYSTEM_PROMPT = """"""
+# MAGIC
+# MAGIC # Get configuration from environment variables set by the notebook
+# MAGIC CATALOG_NAME = os.environ.get("CATALOG_NAME", "")
+# MAGIC SCHEMA_NAME = os.environ.get("SCHEMA_NAME", "spark_observability")
 # MAGIC
 # MAGIC
 # MAGIC ###############################################################################
@@ -120,7 +131,7 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}")
 # MAGIC
 # MAGIC # You can use UDFs in Unity Catalog as agent tools
 # MAGIC # TODO: Add additional tools
-# MAGIC UC_TOOL_NAMES = ["sqlmetrics", "jobmetrics", "stagemetrics", "taskmetrics", "photonmetrics"]
+# MAGIC UC_TOOL_NAMES = [f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_listshsjobsraw", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_listshsstagessraw", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_listshssqlraw", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_listshstasksraw", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_sqlmetrics", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_jobsmetrics", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_stagemetrics", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_taskmetrics", f"{CATALOG_NAME}.{SCHEMA_NAME}.emr_photonmetrics"]
 # MAGIC
 # MAGIC uc_toolkit = UCFunctionToolkit(function_names=UC_TOOL_NAMES)
 # MAGIC uc_function_client = get_uc_function_client()
@@ -265,7 +276,12 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG_NAME}.{SCHEMA_NAME}")
 # MAGIC
 # MAGIC
 # MAGIC # Log the model using MLflow
-# MAGIC mlflow.openai.autolog()
+# MAGIC try:
+# MAGIC     mlflow.openai.autolog()
+# MAGIC except AttributeError:
+# MAGIC     # autolog may fail in some notebook environments
+# MAGIC     pass
+# MAGIC
 # MAGIC AGENT = ToolCallingAgent(llm_endpoint=LLM_ENDPOINT_NAME, tools=TOOL_INFOS)
 # MAGIC mlflow.models.set_model(AGENT)
 
@@ -327,13 +343,14 @@ input_example = {
     "input": [
         {
             "role": "user",
-            "content": "hi i need help tuning a spark job. please invoke tool tmpsqlnodemetricstring to fetch string snippet of node metrics for a spark sql query and analyze to provide comprehensive tuning recommendations, thanks!"
+            "content": "hi i need help tuning a spark job. please invoke tool sqlmetrics to fetch string snippet of node metrics for a spark sql query and analyze to provide comprehensive tuning recommendations, thanks!"
         }
     ],
     "custom_inputs": {
         "session_id": "test-session"
     }
 }
+
 
 with mlflow.start_run():
     logged_agent_info = mlflow.pyfunc.log_model(
@@ -345,7 +362,7 @@ with mlflow.start_run():
             "backoff",
             f"databricks-connect=={get_distribution('databricks-connect').version}",
         ],
-        resources=resources,
+        resources=resources
     )
 
 # COMMAND ----------
@@ -368,7 +385,7 @@ eval_dataset = [
             "input": [
                 {
                     "role": "user",
-                    "content": "hi i need help tuning a spark job. please invoke tool tmpsqlnodemetricstring to fetch string snippet of node metrics for a spark sql query and analyze to provide comprehensive tuning recommendations, thanks!"
+                    "content": "hi i need help tuning a spark job. please invoke tool sqlmetrics to fetch string snippet of node metrics for a spark sql query and analyze to provide comprehensive tuning recommendations, thanks!"
                 }
             ]
         },
@@ -410,10 +427,11 @@ mlflow.models.predict(
 mlflow.set_registry_uri("databricks-uc")
 
 # TODO: define the catalog, schema, and model name for your UC model
-catalog = CATALOG_NAME
-schema = SCHEMA_NAME
-model_name = "spark_observability_agent"
-UC_MODEL_NAME = f"{catalog}.{schema}.{model_name}"
+CATALOG_NAME = dbutils.widgets.get("catalog_name").strip()
+SCHEMA_NAME = dbutils.widgets.get("schema_name").strip() or "spark_observability"
+
+model_name = "spark_observability_agent_emr"
+UC_MODEL_NAME = f"{CATALOG_NAME}.{SCHEMA_NAME}.{model_name}"
 
 # register the model to UC
 uc_registered_model_info = mlflow.register_model(
@@ -431,6 +449,8 @@ from databricks import agents
 # NOTE: pass scale_to_zero=True to agents.deploy() to enable scale-to-zero for cost savings.
 # This is not recommended for production workloads, as capacity is not guaranteed when scaled to zero.
 # Scaled to zero endpoints may take extra time to respond when queried, while they scale back up.
+
+
 agents.deploy(UC_MODEL_NAME, uc_registered_model_info.version, tags = {"endpointSource": "playground"})
 
 # COMMAND ----------
