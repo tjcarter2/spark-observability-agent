@@ -1,422 +1,595 @@
-#!/usr/bin/env python3
-"""
-Spark Log Parser MCP Server
-
-Exposes Spark event log parsing and tuning recommendations as MCP tools.
-"""
+"""MCP Server for Spark History Log Parsing from EMR clusters."""
 
 import json
-import os
-import sys
-from pathlib import Path
-from typing import Any
+import logging
+from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from emr_client import EMRPersistentUIClient
 
-from spark_log_parser import SparkLogParser, get_s3_client, parse_s3_path
-from tuning_advisor import SparkTuningAdvisor
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "Spark Log Parser",
-    instructions="Parse Spark event logs and get comprehensive tuning recommendations. Use parse_spark_logs to get an overview, get_tuning_recommendations for optimization suggestions, and analyze_sql_execution for detailed query analysis.",
+    "Spark History MCP",
+    instructions=(
+        "Analyze Spark applications from EMR cluster history servers. "
+        "Use list_spark_applications first to discover apps, then drill into "
+        "jobs, stages, executors, SQL queries, and performance issues."
+    ),
     host="0.0.0.0",
     port=8000,
     stateless_http=True,
 )
 
+_emr_client: Optional[EMRPersistentUIClient] = None
 
-def _parse_logs(path: str, cred_name: str) -> tuple[SparkLogParser, str]:
-    """Helper to parse logs from a path."""
-    parser = SparkLogParser()
-    source = path
 
-    if path.startswith("s3://"):
-        s3_client = get_s3_client(cred_name)
-        bucket_name, prefix = parse_s3_path(path)
-        
-        is_file = '.' in prefix.split('/')[-1] if prefix else False
-        
-        if is_file:
-            print(f"Parsing S3 file: {path}")
-            parser.parse_file(prefix, bucket_name, s3_client)
-            parser._finalize_sql_job_associations()
-        else:
-            print(f"Parsing S3 directory: {path}")
-            parser.parse_directory(path, bucket_name, prefix, s3_client)
+def get_client(cred_name: str, cluster_arn: str) -> EMRPersistentUIClient:
+    """Get or create the EMR client singleton."""
+    global _emr_client
+    if _emr_client is None or not getattr(_emr_client, 'api_base', None):
+        _emr_client = None
+        client = EMRPersistentUIClient(cred_name, cluster_arn)
+        try:
+            client.initialize()
+        except Exception:
+            _emr_client = None
+            raise
+        _emr_client = client
+    return _emr_client
+
+
+def format_response(data: Any, success: bool = True, error: str = None) -> str:
+    """Format response as JSON string."""
+    response = {"success": success, "data": data}
+    if error:
+        response["error"] = error
+    return json.dumps(response, indent=2, default=str)
+
+
+def _get_quantile_value(metric_data, index: int, default=0):
+    """
+    Safely extract a value from a task summary metric.
+
+    The Spark History Server taskSummary endpoint returns metrics in two possible formats:
+    1. A list of quantile values: [5th, 25th, 50th, 75th, 95th]
+    2. A dict with named keys: {"min": ..., "median": ..., "max": ...}
+
+    Args:
+        metric_data: The metric data (list or dict)
+        index: For list format, the index to access. Common indices:
+               0=min/5th, 1=25th, 2=median/50th, 3=75th, 4=max/95th
+        default: Default value if extraction fails
+
+    Returns:
+        The extracted numeric value or the default
+    """
+    if metric_data is None:
+        return default
+    if isinstance(metric_data, list):
+        if len(metric_data) > index:
+            return metric_data[index] or default
+        return default
+    if isinstance(metric_data, dict):
+        # Fallback for dict format (some Spark versions)
+        key_map = {0: "min", 2: "median", 4: "max"}
+        key = key_map.get(index, str(index))
+        return metric_data.get(key, default)
+    return default
+
+
+@mcp.tool()
+def list_spark_applications(cred_name: str, cluster_arn: str) -> str:
+    """
+    List all Spark applications from the EMR cluster's history server.
+    Returns application IDs, names, start/end times, and status.
+    Use this first to discover available applications for analysis.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+    """
+    client = get_client(cred_name, cluster_arn)
+    apps = client.get_applications()
+    return format_response(apps)
+
+
+@mcp.tool()
+def get_application_summary(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Get a comprehensive summary of a Spark application including
+    job counts, stage counts, executor info, and duration.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID (e.g., 'application_1234567890123_0001')
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    app = client.get_application(app_id, attempt_id=app_attempt_id)
+    jobs = client.get_jobs(app_id, attempt_id=app_attempt_id)
+    stages = client.get_stages(app_id, attempt_id=app_attempt_id)
+    executors = client.get_executors(app_id, attempt_id=app_attempt_id)
+
+    summary = {
+        "application": app,
+        "job_count": len(jobs),
+        "jobs_succeeded": sum(1 for j in jobs if j.get("status") == "SUCCEEDED"),
+        "jobs_failed": sum(1 for j in jobs if j.get("status") == "FAILED"),
+        "stage_count": len(stages),
+        "stages_completed": sum(1 for s in stages if s.get("status") == "COMPLETE"),
+        "stages_failed": sum(1 for s in stages if s.get("status") == "FAILED"),
+        "executor_count": len(executors),
+        "total_cores": sum(e.get("totalCores", 0) for e in executors),
+        "total_memory_gb": sum(e.get("maxMemory", 0) for e in executors) / (1024**3),
+    }
+    return format_response(summary)
+
+
+@mcp.tool()
+def get_application_jobs(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Get all jobs for a Spark application with execution metrics.
+    Returns job IDs, status, stage info, and timing details.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    jobs = client.get_jobs(app_id, attempt_id=app_attempt_id)
+    return format_response(jobs)
+
+
+@mcp.tool()
+def get_application_stages(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Get all stages for a Spark application with detailed metrics.
+    Returns stage IDs, input/output records, shuffle metrics, task counts, and timing.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    stages = client.get_stages(app_id, attempt_id=app_attempt_id)
+    return format_response(stages)
+
+
+@mcp.tool()
+def get_stage_details(
+    cred_name: str, cluster_arn: str, app_id: str, stage_id: int,
+    stage_attempt_id: int = 0, app_attempt_id: str = None
+) -> str:
+    """
+    Get detailed metrics for a specific stage including task summary
+    statistics (min, median, max, percentiles) for duration, GC time,
+    shuffle read/write, and memory spill.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        stage_id: Stage ID number
+        stage_attempt_id: Stage attempt ID (default 0)
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    stage = client.get_stage(app_id, stage_id, stage_attempt_id, app_attempt_id=app_attempt_id)
+    try:
+        task_summary = client.get_stage_task_summary(
+            app_id, stage_id, stage_attempt_id, app_attempt_id=app_attempt_id
+        )
+        stage["taskSummary"] = task_summary
+    except Exception as e:
+        logger.warning(f"Could not get task summary: {e}")
+    return format_response(stage)
+
+
+@mcp.tool()
+def get_stage_tasks(
+    cred_name: str, cluster_arn: str, app_id: str, stage_id: int,
+    stage_attempt_id: int = 0, app_attempt_id: str = None
+) -> str:
+    """
+    Get individual task-level metrics for a stage. Returns detailed
+    timing, shuffle, and memory metrics per task. Use for diagnosing
+    data skew and straggler tasks.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        stage_id: Stage ID number
+        stage_attempt_id: Stage attempt ID (default 0)
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    tasks = client.get_stage_tasks(app_id, stage_id, stage_attempt_id, app_attempt_id=app_attempt_id)
+    return format_response(tasks)
+
+
+@mcp.tool()
+def get_executors(
+    cred_name: str, cluster_arn: str, app_id: str,
+    include_dead: bool = False, app_attempt_id: str = None
+) -> str:
+    """
+    Get executor metrics for a Spark application. Returns memory usage,
+    disk usage, active tasks, completed tasks, and GC time per executor.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        include_dead: Include dead/removed executors
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    if include_dead:
+        executors = client.get_all_executors(app_id, attempt_id=app_attempt_id)
     else:
-        input_path = Path(path)
-        if not input_path.exists():
-            raise FileNotFoundError(f"Path does not exist: {path}")
-
-        if input_path.is_file():
-            print(f"Parsing local file: {path}")
-            with open(input_path, 'r') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                        parser._process_event(event)
-                    except json.JSONDecodeError as e:
-                        print(f"Warning: Failed to parse line {line_num}: {e}")
-            parser._finalize_sql_job_associations()
-        else:
-            print(f"Parsing local directory: {path}")
-            for file_path in sorted(input_path.glob("*.json")):
-                print(f"Parsing: {file_path}")
-                with open(file_path, 'r') as f:
-                    for line_num, line in enumerate(f, 1):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            event = json.loads(line)
-                            parser._process_event(event)
-                        except json.JSONDecodeError as e:
-                            print(f"Warning: Failed to parse line {line_num}: {e}")
-            parser._finalize_sql_job_associations()
-
-    return parser, source
+        executors = client.get_executors(app_id, attempt_id=app_attempt_id)
+    return format_response(executors)
 
 
 @mcp.tool()
-def parse_spark_logs(path: str, cred_name: str) -> dict[str, Any]:
+def get_sql_queries(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
     """
-    Parse Spark event logs from a file or directory.
+    Get all SQL queries executed by a Spark application. Returns
+    query text, execution plan, duration, and job IDs.
 
     Args:
-        path: Path to a Spark event log file (.json) or directory containing log files
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        Summary of parsed metrics including job, stage, and SQL execution counts
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
     """
-    parser, source = _parse_logs(path, cred_name)
+    client = get_client(cred_name, cluster_arn)
+    sql_queries = client.get_sql_queries(app_id, attempt_id=app_attempt_id)
+    return format_response(sql_queries)
 
-    job_metrics = parser.get_job_metrics()
-    stage_metrics = parser.get_stage_metrics()
-    sql_metrics = parser.get_sql_metrics()
 
-    job_statuses = {}
-    for j in job_metrics:
-        status = j.get("status", "Unknown")
-        job_statuses[status] = job_statuses.get(status, 0) + 1
+@mcp.tool()
+def get_sql_query_details(
+    cred_name: str, cluster_arn: str, app_id: str, execution_id: int,
+    app_attempt_id: str = None
+) -> str:
+    """
+    Get detailed metrics for a specific SQL query including
+    physical plan, metrics, and associated jobs/stages.
 
-    stage_statuses = {}
-    for s in stage_metrics:
-        status = s.get("status", "Unknown")
-        stage_statuses[status] = stage_statuses.get(status, 0) + 1
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        execution_id: SQL execution ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    sql_detail = client.get_sql_query(app_id, execution_id, attempt_id=app_attempt_id)
+    return format_response(sql_detail)
 
-    sql_statuses = {}
-    for s in sql_metrics:
-        status = s.get("status", "Unknown")
-        sql_statuses[status] = sql_statuses.get(status, 0) + 1
 
-    total_shuffle_read = sum(s.get("shuffleReadBytes", 0) for s in stage_metrics)
-    total_shuffle_write = sum(s.get("shuffleWriteBytes", 0) for s in stage_metrics)
-    total_input = sum(s.get("inputBytes", 0) for s in stage_metrics)
-    total_output = sum(s.get("outputBytes", 0) for s in stage_metrics)
+@mcp.tool()
+def get_spark_configuration(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Get Spark configuration and environment for an application.
+    Returns spark.* properties, classpath, JVM args, and system properties.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    env = client.get_environment(app_id, attempt_id=app_attempt_id)
+    return format_response(env)
+
+
+@mcp.tool()
+def get_storage_info(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Get RDD and DataFrame storage/caching information. Returns
+    cached data sizes, memory vs disk usage, and partition counts.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    storage = client.get_storage_rdd(app_id, attempt_id=app_attempt_id)
+    return format_response(storage)
+
+
+@mcp.tool()
+def analyze_performance_issues(
+    cred_name: str, cluster_arn: str, app_id: str, app_attempt_id: str = None
+) -> str:
+    """
+    Perform comprehensive performance analysis on a Spark application.
+    Analyzes stages for skew, spill, GC issues, and shuffle bottlenecks.
+    Returns prioritized list of issues with recommendations.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    analysis = _analyze_performance(client, app_id, app_attempt_id)
+    return format_response(analysis)
+
+
+@mcp.tool()
+def get_full_application_report(
+    cred_name: str, cluster_arn: str, app_id: str,
+    include_tasks: bool = False, app_attempt_id: str = None
+) -> str:
+    """
+    Generate a complete diagnostic report for a Spark application.
+    Includes application summary, jobs, stages, executors, SQL queries,
+    configuration, and performance analysis.
+
+    Args:
+        cred_name: Databricks service credential name for AWS access
+        cluster_arn: EMR cluster ARN
+        app_id: Spark application ID
+        include_tasks: Include task-level details (can be very large)
+        app_attempt_id: Application attempt ID. If None, auto-resolves the latest.
+    """
+    client = get_client(cred_name, cluster_arn)
+    report = _generate_full_report(client, app_id, include_tasks, app_attempt_id)
+    return format_response(report)
+
+
+def _analyze_performance(
+    client: EMRPersistentUIClient, app_id: str, app_attempt_id: str = None
+) -> Dict[str, Any]:
+    """Analyze application for common performance issues."""
+    issues = []
+    recommendations = []
+
+    stages = client.get_stages(app_id, attempt_id=app_attempt_id)
+    executors = client.get_executors(app_id, attempt_id=app_attempt_id)
+
+    for stage in stages:
+        stage_id = stage.get("stageId")
+        status = stage.get("status")
+
+        if status != "COMPLETE":
+            continue
+
+        try:
+            task_summary = client.get_stage_task_summary(
+                app_id, stage_id, 0, app_attempt_id=app_attempt_id
+            )
+        except Exception:
+            continue
+
+        # The taskSummary API returns metrics as lists of quantile values:
+        # [5th percentile, 25th, 50th (median), 75th, 95th percentile]
+        # Use _get_quantile_value to safely extract by index.
+        duration_metrics = task_summary.get("executorRunTime") if isinstance(task_summary, dict) else None
+        gc_metrics = task_summary.get("jvmGcTime") if isinstance(task_summary, dict) else None
+        spill_metrics = task_summary.get("memoryBytesSpilled") if isinstance(task_summary, dict) else None
+        disk_spill = task_summary.get("diskBytesSpilled") if isinstance(task_summary, dict) else None
+
+        if duration_metrics:
+            max_dur = _get_quantile_value(duration_metrics, 4)  # 95th percentile / max
+            median_dur = _get_quantile_value(duration_metrics, 2)  # 50th percentile / median
+
+            if max_dur > 0 and median_dur > 0:
+                skew_ratio = max_dur / median_dur
+                if skew_ratio > 10:
+                    issues.append({
+                        "type": "DATA_SKEW",
+                        "severity": "HIGH",
+                        "stage_id": stage_id,
+                        "details": f"Max task duration ({max_dur}ms) is {skew_ratio:.1f}x median ({median_dur}ms)",
+                    })
+                    recommendations.append({
+                        "issue_type": "DATA_SKEW",
+                        "stage_id": stage_id,
+                        "recommendation": (
+                            "Consider salting keys, using adaptive query execution, "
+                            "or repartitioning data to reduce skew."
+                        ),
+                    })
+
+        if gc_metrics and duration_metrics:
+            median_gc = _get_quantile_value(gc_metrics, 2)  # median GC time
+            median_dur = _get_quantile_value(duration_metrics, 2)  # median duration
+            gc_ratio = median_gc / median_dur if median_dur > 0 else 0
+            if gc_ratio > 0.1:
+                issues.append({
+                    "type": "HIGH_GC_TIME",
+                    "severity": "MEDIUM",
+                    "stage_id": stage_id,
+                    "details": f"GC time is {gc_ratio*100:.1f}% of task duration",
+                })
+                recommendations.append({
+                    "issue_type": "HIGH_GC_TIME",
+                    "stage_id": stage_id,
+                    "recommendation": (
+                        "Increase executor memory, tune GC settings, "
+                        "or reduce data size per task."
+                    ),
+                })
+
+        if spill_metrics or disk_spill:
+            mem_spill = _get_quantile_value(spill_metrics, 4) if spill_metrics else 0  # max spill
+            disk_spill_val = _get_quantile_value(disk_spill, 4) if disk_spill else 0  # max disk spill
+
+            if mem_spill > 0 or disk_spill_val > 0:
+                issues.append({
+                    "type": "MEMORY_SPILL",
+                    "severity": "MEDIUM" if disk_spill_val == 0 else "HIGH",
+                    "stage_id": stage_id,
+                    "details": f"Memory spill: {mem_spill/(1024**2):.1f}MB, Disk spill: {disk_spill_val/(1024**2):.1f}MB",
+                })
+                recommendations.append({
+                    "issue_type": "MEMORY_SPILL",
+                    "stage_id": stage_id,
+                    "recommendation": (
+                        "Increase spark.memory.fraction or executor memory, "
+                        "or reduce partition sizes."
+                    ),
+                })
+
+        input_records = stage.get("inputRecords", 0)
+        output_records = stage.get("outputRecords", 0)
+        num_tasks = stage.get("numTasks", 1)
+
+        if num_tasks > 0:
+            records_per_task = (input_records + output_records) / num_tasks
+            if records_per_task < 1000 and num_tasks > 200:
+                issues.append({
+                    "type": "TOO_MANY_SMALL_TASKS",
+                    "severity": "LOW",
+                    "stage_id": stage_id,
+                    "details": f"{num_tasks} tasks with ~{records_per_task:.0f} records each",
+                })
+                recommendations.append({
+                    "issue_type": "TOO_MANY_SMALL_TASKS",
+                    "stage_id": stage_id,
+                    "recommendation": (
+                        "Consider coalescing partitions or increasing "
+                        "spark.sql.shuffle.partitions appropriately."
+                    ),
+                })
+
+    total_gc = sum(e.get("totalGCTime", 0) for e in executors)
+    total_duration = sum(e.get("totalDuration", 0) for e in executors)
+    if total_duration > 0 and total_gc / total_duration > 0.1:
+        issues.append({
+            "type": "CLUSTER_WIDE_GC",
+            "severity": "HIGH",
+            "details": f"Cluster-wide GC is {total_gc/total_duration*100:.1f}% of total executor time",
+        })
+        recommendations.append({
+            "issue_type": "CLUSTER_WIDE_GC",
+            "recommendation": (
+                "Consider G1GC, increase executor memory, or tune "
+                "spark.memory.fraction and spark.memory.storageFraction."
+            ),
+        })
 
     return {
-        "source": source,
-        "summary": {
-            "jobs": {
-                "total": len(job_metrics),
-                "by_status": job_statuses,
-            },
-            "stages": {
-                "total": len(stage_metrics),
-                "by_status": stage_statuses,
-            },
-            "sql_executions": {
-                "total": len(sql_metrics),
-                "by_status": sql_statuses,
-            },
-        },
-        "io_summary": {
-            "total_input_bytes": total_input,
-            "total_output_bytes": total_output,
-            "total_shuffle_read_bytes": total_shuffle_read,
-            "total_shuffle_write_bytes": total_shuffle_write,
-            "total_input_gb": round(total_input / (1024**3), 2),
-            "total_shuffle_gb": round((total_shuffle_read + total_shuffle_write) / (1024**3), 2),
-        },
+        "app_id": app_id,
+        "issues_found": len(issues),
+        "issues": sorted(issues, key=lambda x: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(x.get("severity"), 3)),
+        "recommendations": recommendations,
     }
 
 
-@mcp.tool()
-def get_job_metrics(path: str, cred_name: str) -> list[dict[str, Any]]:
-    """
-    Get detailed job metrics from Spark event logs.
-
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        List of job metrics including jobId, status, task counts, and stage information
-    """
-    parser, _ = _parse_logs(path, cred_name)
-    return parser.get_job_metrics()
-
-
-@mcp.tool()
-def get_stage_metrics(path: str, cred_name: str) -> list[dict[str, Any]]:
-    """
-    Get detailed stage metrics from Spark event logs.
-
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        List of stage metrics including I/O stats, shuffle metrics, and spill data
-    """
-    parser, _ = _parse_logs(path, cred_name)
-    return parser.get_stage_metrics()
-
-
-@mcp.tool()
-def get_sql_metrics(path: str, cred_name: str) -> list[dict[str, Any]]:
-    """
-    Get detailed SQL execution metrics from Spark event logs.
-
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        List of SQL metrics including execution plans, node metrics, and timing
-    """
-    parser, _ = _parse_logs(path, cred_name)
-    return parser.get_sql_metrics()
-
-
-@mcp.tool()
-def get_tuning_recommendations(path: str, cred_name: str) -> dict[str, Any]:
-    """
-    Analyze Spark event logs and provide comprehensive tuning recommendations.
-
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        Tuning recommendations categorized by severity and type
-    """
-    parser, source = _parse_logs(path, cred_name)
-
-    job_metrics = parser.get_job_metrics()
-    stage_metrics = parser.get_stage_metrics()
-    sql_metrics = parser.get_sql_metrics()
-
-    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics)
-    recommendations = advisor.analyze()
-    summary = advisor.get_summary()
-
-    return {
-        "source": source,
-        "summary": summary,
-        "recommendations": [
-            {
-                "category": r.category,
-                "severity": r.severity,
-                "title": r.title,
-                "description": r.description,
-                "current_value": r.current_value,
-                "recommended_action": r.recommended_action,
-                "config_suggestion": r.config_suggestion,
-            }
-            for r in recommendations
-        ],
+def _generate_full_report(
+    client: EMRPersistentUIClient, app_id: str,
+    include_tasks: bool = False, app_attempt_id: str = None
+) -> Dict[str, Any]:
+    """Generate comprehensive application report."""
+    report = {
+        "app_id": app_id,
+        "application": None,
+        "jobs": [],
+        "stages": [],
+        "executors": [],
+        "sql_queries": [],
+        "environment": None,
+        "storage": [],
+        "performance_analysis": None,
     }
 
+    try:
+        report["application"] = client.get_application(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get application details: {e}")
 
-@mcp.tool()
-def get_tuning_report(path: str, cred_name: str) -> str:
-    """
-    Generate a formatted tuning report from Spark event logs.
+    try:
+        report["jobs"] = client.get_jobs(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get jobs: {e}")
 
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
+    try:
+        stages = client.get_stages(app_id, attempt_id=app_attempt_id)
+        for stage in stages:
+            stage_data = {"stage": stage}
+            try:
+                stage_data["task_summary"] = client.get_stage_task_summary(
+                    app_id, stage["stageId"], 0, app_attempt_id=app_attempt_id
+                )
+            except Exception:
+                pass
 
-    Returns:
-        Markdown-formatted tuning report with prioritized recommendations
-    """
-    parser, source = _parse_logs(path, cred_name)
+            if include_tasks:
+                try:
+                    stage_data["tasks"] = client.get_stage_tasks(
+                        app_id, stage["stageId"], 0, app_attempt_id=app_attempt_id
+                    )
+                except Exception:
+                    pass
 
-    job_metrics = parser.get_job_metrics()
-    stage_metrics = parser.get_stage_metrics()
-    sql_metrics = parser.get_sql_metrics()
+            report["stages"].append(stage_data)
+    except Exception as e:
+        logger.warning(f"Could not get stages: {e}")
 
-    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics)
-    advisor.analyze()
+    try:
+        report["executors"] = client.get_all_executors(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get executors: {e}")
 
-    header = f"# Spark Performance Analysis\n\n**Source:** {source}\n\n"
-    header += f"**Jobs:** {len(job_metrics)} | **Stages:** {len(stage_metrics)} | **SQL Executions:** {len(sql_metrics)}\n\n"
-    header += "---\n"
+    try:
+        report["sql_queries"] = client.get_sql_queries(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get SQL queries: {e}")
 
-    return header + advisor.format_recommendations()
+    try:
+        report["environment"] = client.get_environment(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get environment: {e}")
 
+    try:
+        report["storage"] = client.get_storage_rdd(app_id, attempt_id=app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not get storage info: {e}")
 
-@mcp.tool()
-def analyze_sql_execution(path: str, execution_id: int, cred_name: str) -> dict[str, Any]:
-    """
-    Get detailed analysis of a specific SQL execution.
+    try:
+        report["performance_analysis"] = _analyze_performance(client, app_id, app_attempt_id)
+    except Exception as e:
+        logger.warning(f"Could not analyze performance: {e}")
 
-    Args:
-        path: Path to a Spark event log file or directory
-        execution_id: The SQL execution ID to analyze
-        cred_name: Name of service credentials for S3 access
-
-    Returns:
-        Detailed SQL execution metrics including plan nodes and their metrics
-    """
-    parser, _ = _parse_logs(path, cred_name)
-    sql_metrics = parser.get_sql_metrics()
-
-    target = None
-    for sql in sql_metrics:
-        if sql.get("id") == execution_id:
-            target = sql
-            break
-
-    if not target:
-        return {"error": f"SQL execution {execution_id} not found"}
-
-    nodes_with_metrics = [n for n in target.get("nodes", []) if n.get("metrics")]
-    total_metrics = sum(len(n.get("metrics", [])) for n in target.get("nodes", []))
-
-    node_types = {}
-    for n in target.get("nodes", []):
-        name = n.get("nodeName", "").split()[0]
-        if name:
-            node_types[name] = node_types.get(name, 0) + 1
-
-    return {
-        "execution_id": execution_id,
-        "status": target.get("status"),
-        "duration_ms": target.get("duration"),
-        "description": target.get("description", "")[:200],
-        "plan_summary": {
-            "total_nodes": len(target.get("nodes", [])),
-            "nodes_with_metrics": len(nodes_with_metrics),
-            "total_metrics_collected": total_metrics,
-            "node_types": node_types,
-        },
-        "success_job_ids": target.get("successJobIds", []),
-        "failed_job_ids": target.get("failedJobIds", ""),
-        "nodes": target.get("nodes", []),
-    }
-
-
-@mcp.tool()
-def export_metrics(path: str, cred_name: str, output_dir: str, format: str = "json") -> dict[str, str]:
-    """
-    Export parsed metrics to files.
-
-    Args:
-        path: Path to a Spark event log file or directory
-        cred_name: Name of service credentials for S3 access
-        output_dir: Directory to write output files
-        format: Output format - 'json' or 'jsonl'
-
-
-    Returns:
-        Paths to the exported files
-    """
-    parser, _ = _parse_logs(path, cred_name)
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    job_metrics = parser.get_job_metrics()
-    stage_metrics = parser.get_stage_metrics()
-    sql_metrics = parser.get_sql_metrics()
-
-    files = {}
-    ext = format if format in ["json", "jsonl"] else "json"
-
-    if format == "jsonl":
-        with open(output_path / f"job_metrics.{ext}", "w") as f:
-            for m in job_metrics:
-                f.write(json.dumps(m) + "\n")
-        with open(output_path / f"stage_metrics.{ext}", "w") as f:
-            for m in stage_metrics:
-                f.write(json.dumps(m) + "\n")
-        with open(output_path / f"sql_metrics.{ext}", "w") as f:
-            for m in sql_metrics:
-                f.write(json.dumps(m) + "\n")
-    else:
-        with open(output_path / f"job_metrics.{ext}", "w") as f:
-            json.dump(job_metrics, f, indent=2)
-        with open(output_path / f"stage_metrics.{ext}", "w") as f:
-            json.dump(stage_metrics, f, indent=2)
-        with open(output_path / f"sql_metrics.{ext}", "w") as f:
-            json.dump(sql_metrics, f, indent=2)
-
-    return {
-        "job_metrics": str(output_path / f"job_metrics.{ext}"),
-        "stage_metrics": str(output_path / f"stage_metrics.{ext}"),
-        "sql_metrics": str(output_path / f"sql_metrics.{ext}"),
-    }
-
-
-
-@mcp.prompt()
-def analyze_spark_performance(log_path: str) -> str:
-    """
-    Generate a prompt for comprehensive Spark performance analysis.
-
-    Args:
-        log_path: Path to Spark event logs
-    """
-    return f"""Please analyze the Spark event logs at '{log_path}' and provide:
-
-1. **Overview**: Parse the logs and summarize the job/stage/SQL execution counts
-2. **Performance Issues**: Identify any performance bottlenecks or failures
-3. **Tuning Recommendations**: Get tuning recommendations and prioritize them
-4. **Specific Optimizations**: For any high-priority issues, suggest specific configuration changes
-
-Use these tools in order:
-1. parse_spark_logs('{log_path}') - Get overview
-2. get_tuning_recommendations('{log_path}') - Get recommendations
-3. For detailed investigation, use get_job_metrics, get_stage_metrics, or get_sql_metrics
-
-Provide a clear, actionable summary of findings."""
-
-
-@mcp.prompt()
-def investigate_slow_queries(log_path: str, threshold_seconds: int = 300) -> str:
-    """
-    Generate a prompt for investigating slow SQL queries.
-
-    Args:
-        log_path: Path to Spark event logs
-        threshold_seconds: Duration threshold in seconds for "slow" queries
-    """
-    return f"""Please investigate slow SQL queries in the Spark logs at '{log_path}'.
-
-1. Parse the SQL metrics using get_sql_metrics('{log_path}')
-2. Identify queries taking longer than {threshold_seconds} seconds
-3. For each slow query, use analyze_sql_execution to get detailed node metrics
-4. Look for common patterns:
-   - Data skew in joins
-   - Excessive shuffle
-   - Missing broadcast hints
-   - Inefficient aggregations
-
-Provide specific optimization suggestions for each slow query found."""
+    return report
 
 
 if __name__ == "__main__":
     import argparse
 
-    arg_parser = argparse.ArgumentParser(description="Spark Log Parser MCP Server")
+    arg_parser = argparse.ArgumentParser(description="Spark History MCP Server")
     arg_parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
@@ -433,9 +606,6 @@ if __name__ == "__main__":
     args = arg_parser.parse_args()
 
     if args.transport == "streamable-http":
-        # Patch uvicorn.Config.__init__ to inject CORS middleware into the
-        # Starlette app that the MCP SDK creates internally. This is needed
-        # because mcp.run() doesn't expose the app for direct modification.
         import uvicorn
         from starlette.middleware.cors import CORSMiddleware
 
