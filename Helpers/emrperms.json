@@ -1,0 +1,27 @@
+{
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Sid": "EmrReadAndSparkHistoryUi",
+			"Effect": "Allow",
+			"Action": [
+				"elasticmapreduce:ListClusters",
+				"elasticmapreduce:DescribeCluster",
+				"elasticmapreduce:ListSteps",
+				"elasticmapreduce:DescribeStep",
+				"elasticmapreduce:CreatePersistentAppUI",
+				"elasticmapreduce:DescribePersistentAppUI",
+				"elasticmapreduce:GetPersistentAppUIPresignedURL",
+				"elasticmapreduce:ListInstanceGroups",
+				"elasticmapreduce:ListInstanceFleets"
+			],
+			"Resource": "*"
+		},
+		{
+			"Sid": "StsCallerIdentity",
+			"Effect": "Allow",
+			"Action": "sts:GetCallerIdentity",
+			"Resource": "*"
+		}
+	]
+}
