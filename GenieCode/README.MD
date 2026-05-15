@@ -18,22 +18,22 @@ ii) i) Hi I need help tuning a spark job. Please use MCP server emr-parser to fe
 ii) Based on the execution metrics, what % of agg runtime would you expect to fall within photon? What cost/perf improvements should be expected from leveraging photon rather than EMR/OSS?
 
 
-Create Databricks App to host custom MCP server:
+### Create Databricks App to host custom MCP server:
 
 Manual approach:
-Create a git folder (https://docs.databricks.com/aws/en/repos/) that points to this repo
-Create Databricks App via the UI
-Update the Databricks App to have source pointing to the appropriate MCP within the GenieCode directory
+- Create a git folder (https://docs.databricks.com/aws/en/repos/) that points to this repo
+- Create Databricks App via the UI
+- Update the Databricks App to have source pointing to the appropriate MCP within the GenieCode directory
 
 Automated approach:
-Download this repo locally
-Synch local repo to Databricks workspace
-Deploy to Databricks apps using CLI or Terraform with command like below
-databricks apps deploy mcp-emr-parser --source-code-path /Workspace/{{desiredpath}}
+- Download this repo locally
+- Synch local repo to Databricks workspace
+- Deploy to Databricks apps using CLI or Terraform with command like below
+- databricks apps deploy mcp-emr-parser --source-code-path /Workspace/{{desiredpath}}
 
 
-Create service credential using an IAM role that has read access to where raw spark logs are stored/ access to subset of EMR APIs
+### Create service credential using an IAM role that has read access to where raw spark logs are stored/ access to subset of EMR APIs
 
-Create IAM role with appropriate permissions via Terraform using aws_iam_role resoruce (https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role). Apporpriate trust policy and permissions can be found in helper repo here.
+- Create IAM role with appropriate permissions via Terraform using [aws_iam_role resource] (https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role). Apporpriate trust policy and permissions can be found in helper repo here.
 
-Create service credential using databricks_credential resource (https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
+- Create service credential using [databricks_credential resource] (https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
