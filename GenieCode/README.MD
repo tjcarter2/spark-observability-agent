@@ -34,6 +34,6 @@ Automated approach:
 
 ### Create service credential using an IAM role that has read access to where raw spark logs are stored/ access to subset of EMR APIs
 
-- Create IAM role with appropriate permissions via Terraform using [aws_iam_role resource] (https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role). Apporpriate trust policy and permissions can be found in helper repo here.
+- Create IAM role with appropriate permissions via Terraform using [aws_iam_role resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role). Apporpriate trust policy and permissions can be found in helper repo here.
 
-- Create service credential using [databricks_credential resource] (https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
+- Create service credential using [databricks_credential resource](https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
