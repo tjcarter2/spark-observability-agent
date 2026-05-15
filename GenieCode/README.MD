@@ -36,3 +36,11 @@ Automated approach:
 - Create IAM role with appropriate permissions via Terraform using [aws_iam_role resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role). Apporpriate trust policy and s3/EMR policy permissions can be found in [helper repo](https://github.com/tjcarter2/spark-observability-agent/tree/main/Helpers)
 
 - Create service credential using [databricks_credential resource](https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
+
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/uno.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/dos.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/tres.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cuatro.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cinco.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/seis.png)
+(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/siete.png)
