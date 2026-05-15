@@ -5,6 +5,7 @@ Spark Log Parser MCP Server
 Exposes Spark event log parsing and tuning recommendations as MCP tools.
 """
 
+import gzip
 import json
 import os
 import sys
@@ -22,6 +23,35 @@ mcp = FastMCP(
     "Spark Log Parser",
     instructions="Parse Spark event logs and get comprehensive tuning recommendations. Use parse_spark_logs to get an overview, get_tuning_recommendations for optimization suggestions, and analyze_sql_execution for detailed query analysis.",
 )
+
+
+def _parse_local_file(file_path: Path, parser) -> None:
+    """Parse a single local event log file (supports plain text and .gz compressed)."""
+    if str(file_path).endswith('.gz'):
+        try:
+            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                        parser._process_event(event)
+                    except json.JSONDecodeError as e:
+                        print(f"Warning: Failed to parse line {line_num} in {file_path.name}: {e}")
+        except (gzip.BadGzipFile, OSError) as e:
+            print(f"Warning: Failed to decompress {file_path}: {e}")
+    else:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    parser._process_event(event)
+                except json.JSONDecodeError as e:
+                    print(f"Warning: Failed to parse line {line_num} in {file_path.name}: {e}")
 
 
 def _parse_logs(path: str) -> tuple[SparkLogParser, str]:
@@ -49,31 +79,24 @@ def _parse_logs(path: str) -> tuple[SparkLogParser, str]:
 
         if input_path.is_file():
             print(f"Parsing local file: {path}")
-            with open(input_path, 'r') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                        parser._process_event(event)
-                    except json.JSONDecodeError as e:
-                        print(f"Warning: Failed to parse line {line_num}: {e}")
+            _parse_local_file(input_path, parser)
             parser._finalize_sql_job_associations()
         else:
             print(f"Parsing local directory: {path}")
-            for file_path in sorted(input_path.glob("*.json")):
+            # Gather all eventlog files: compressed (.gz), extensionless, or eventlog-prefixed
+            log_files = []
+            for file_path in sorted(input_path.iterdir()):
+                if file_path.is_file():
+                    name = file_path.name
+                    # Accept: .gz compressed, extensionless files, or files starting with 'event'
+                    # Skip standalone .json metadata files (config, summaries, etc.)
+                    if name.endswith('.gz') or '.' not in name or name.startswith('event'):
+                        log_files.append(file_path)
+            if not log_files:
+                raise FileNotFoundError(f"No event log files found in: {path}")
+            for file_path in log_files:
                 print(f"Parsing: {file_path}")
-                with open(file_path, 'r') as f:
-                    for line_num, line in enumerate(f, 1):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            event = json.loads(line)
-                            parser._process_event(event)
-                        except json.JSONDecodeError as e:
-                            print(f"Warning: Failed to parse line {line_num}: {e}")
+                _parse_local_file(file_path, parser)
             parser._finalize_sql_job_associations()
 
     return parser, source
@@ -95,6 +118,7 @@ def parse_spark_logs(path: str) -> dict[str, Any]:
     job_metrics = parser.get_job_metrics()
     stage_metrics = parser.get_stage_metrics()
     sql_metrics = parser.get_sql_metrics()
+    task_summary_metrics = parser.get_task_summary_metrics()
 
     job_statuses = {}
     for j in job_metrics:
@@ -130,6 +154,10 @@ def parse_spark_logs(path: str) -> dict[str, Any]:
             "sql_executions": {
                 "total": len(sql_metrics),
                 "by_status": sql_statuses,
+            },
+            "task_summaries": {
+                "total": len(task_summary_metrics),
+                "stages_with_task_data": len(task_summary_metrics),
             },
         },
         "io_summary": {
@@ -189,6 +217,27 @@ def get_sql_metrics(path: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def get_task_summary_metrics(path: str) -> list[dict[str, Any]]:
+    """
+    Get per-stage task summary metrics as quantile distributions from Spark event logs.
+
+    Computes quantile distributions [p5, p25, p50, p75, p95] for each stage's
+    task-level metrics including duration, executor time, GC time, input/output
+    bytes, shuffle read/write, and spill. Mirrors Spark's REST API taskSummary format.
+
+    Args:
+        path: Path to a Spark event log file or directory
+
+    Returns:
+        List of per-stage task summary distributions including duration, input,
+        shuffle, and spill quantiles. Useful for identifying data skew, oversized
+        partitions, and processing rate inefficiencies at the task level.
+    """
+    parser, _ = _parse_logs(path)
+    return parser.get_task_summary_metrics()
+
+
+@mcp.tool()
 def get_tuning_recommendations(path: str) -> dict[str, Any]:
     """
     Analyze Spark event logs and provide comprehensive tuning recommendations.
@@ -204,8 +253,9 @@ def get_tuning_recommendations(path: str) -> dict[str, Any]:
     job_metrics = parser.get_job_metrics()
     stage_metrics = parser.get_stage_metrics()
     sql_metrics = parser.get_sql_metrics()
+    task_summary_metrics = parser.get_task_summary_metrics()
 
-    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics)
+    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics, task_summary_metrics)
     recommendations = advisor.analyze()
     summary = advisor.get_summary()
 
@@ -243,12 +293,13 @@ def get_tuning_report(path: str) -> str:
     job_metrics = parser.get_job_metrics()
     stage_metrics = parser.get_stage_metrics()
     sql_metrics = parser.get_sql_metrics()
+    task_summary_metrics = parser.get_task_summary_metrics()
 
-    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics)
+    advisor = SparkTuningAdvisor(job_metrics, stage_metrics, sql_metrics, task_summary_metrics)
     advisor.analyze()
 
     header = f"# Spark Performance Analysis\n\n**Source:** {source}\n\n"
-    header += f"**Jobs:** {len(job_metrics)} | **Stages:** {len(stage_metrics)} | **SQL Executions:** {len(sql_metrics)}\n\n"
+    header += f"**Jobs:** {len(job_metrics)} | **Stages:** {len(stage_metrics)} | **SQL Executions:** {len(sql_metrics)} | **Task Summaries:** {len(task_summary_metrics)}\n\n"
     header += "---\n"
 
     return header + advisor.format_recommendations()
@@ -325,6 +376,7 @@ def export_metrics(path: str, output_dir: str, format: str = "json") -> dict[str
     job_metrics = parser.get_job_metrics()
     stage_metrics = parser.get_stage_metrics()
     sql_metrics = parser.get_sql_metrics()
+    task_summary_metrics = parser.get_task_summary_metrics()
 
     files = {}
     ext = format if format in ["json", "jsonl"] else "json"
@@ -339,6 +391,9 @@ def export_metrics(path: str, output_dir: str, format: str = "json") -> dict[str
         with open(output_path / f"sql_metrics.{ext}", "w") as f:
             for m in sql_metrics:
                 f.write(json.dumps(m) + "\n")
+        with open(output_path / f"task_summary_metrics.{ext}", "w") as f:
+            for m in task_summary_metrics:
+                f.write(json.dumps(m) + "\n")
     else:
         with open(output_path / f"job_metrics.{ext}", "w") as f:
             json.dump(job_metrics, f, indent=2)
@@ -346,11 +401,14 @@ def export_metrics(path: str, output_dir: str, format: str = "json") -> dict[str
             json.dump(stage_metrics, f, indent=2)
         with open(output_path / f"sql_metrics.{ext}", "w") as f:
             json.dump(sql_metrics, f, indent=2)
+        with open(output_path / f"task_summary_metrics.{ext}", "w") as f:
+            json.dump(task_summary_metrics, f, indent=2)
 
     return {
         "job_metrics": str(output_path / f"job_metrics.{ext}"),
         "stage_metrics": str(output_path / f"stage_metrics.{ext}"),
         "sql_metrics": str(output_path / f"sql_metrics.{ext}"),
+        "task_summary_metrics": str(output_path / f"task_summary_metrics.{ext}"),
     }
 
 
@@ -368,12 +426,14 @@ def analyze_spark_performance(log_path: str) -> str:
 1. **Overview**: Parse the logs and summarize the job/stage/SQL execution counts
 2. **Performance Issues**: Identify any performance bottlenecks or failures
 3. **Tuning Recommendations**: Get tuning recommendations and prioritize them
-4. **Specific Optimizations**: For any high-priority issues, suggest specific configuration changes
+4. **Task-Level Analysis**: Review task summary metrics for skew, partition sizing, and processing rate issues
+5. **Specific Optimizations**: For any high-priority issues, suggest specific configuration changes
 
 Use these tools in order:
 1. parse_spark_logs('{log_path}') - Get overview
-2. get_tuning_recommendations('{log_path}') - Get recommendations
-3. For detailed investigation, use get_job_metrics, get_stage_metrics, or get_sql_metrics
+2. get_tuning_recommendations('{log_path}') - Get recommendations (includes task-level analysis)
+3. get_task_summary_metrics('{log_path}') - Deep-dive into per-stage task distributions
+4. For detailed investigation, use get_job_metrics, get_stage_metrics, or get_sql_metrics
 
 Provide a clear, actionable summary of findings."""
 

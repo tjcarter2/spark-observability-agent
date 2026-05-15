@@ -1,7 +1,8 @@
 """
 Spark Tuning Advisor
 
-Provides comprehensive tuning recommendations based on parsed Spark metrics.
+Provides comprehensive tuning recommendations based on parsed Spark metrics,
+including task-level summary analysis for skew, partition sizing, and throughput.
 """
 
 from dataclasses import dataclass
@@ -27,10 +28,12 @@ class SparkTuningAdvisor:
         job_metrics: list[dict],
         stage_metrics: list[dict],
         sql_metrics: list[dict],
+        task_summary_metrics: list[dict] = None,
     ):
         self.job_metrics = job_metrics
         self.stage_metrics = stage_metrics
         self.sql_metrics = sql_metrics
+        self.task_summary_metrics = task_summary_metrics or []
         self.recommendations: list[TuningRecommendation] = []
 
     def analyze(self) -> list[TuningRecommendation]:
@@ -45,6 +48,12 @@ class SparkTuningAdvisor:
         self._analyze_data_skew()
         self._analyze_sql_performance()
         self._analyze_parallelism()
+
+        # Task summary-based analyses
+        if self.task_summary_metrics:
+            self._analyze_task_duration_skew()
+            self._analyze_partition_size()
+            self._analyze_processing_rate()
 
         return self.recommendations
 
@@ -264,6 +273,257 @@ class SparkTuningAdvisor:
                         current_value=f"Range: {min_tasks} - {max_tasks}",
                         recommended_action="Enable AQE to dynamically adjust partitions based on data size.",
                         config_suggestion="spark.sql.adaptive.enabled=true; spark.sql.adaptive.coalescePartitions.enabled=true",
+                    )
+                )
+
+    # =========================================================================
+    # Task Summary-Based Analyses (using per-stage quantile distributions)
+    # =========================================================================
+
+    def _analyze_task_duration_skew(self) -> None:
+        """Detect task-level data skew based on task duration distribution.
+        
+        Flags stages where:
+        - Median (p50) task duration > 2x the min (p5) task duration
+          (indicates some partitions have significantly more data)
+        - Max (p95) task duration > 2x the median (p50) task duration
+          (indicates straggler tasks / heavy partitions at the tail)
+        """
+        for summary in self.task_summary_metrics:
+            stage_id = summary.get("stageId", "?")
+            attempt_id = summary.get("attemptId", "0")
+            num_tasks = summary.get("numTasks", 0)
+            duration_quantiles = summary.get("duration", [])
+
+            if len(duration_quantiles) < 5 or num_tasks < 10:
+                continue
+
+            # quantiles: [p5, p25, p50, p75, p95]
+            p5 = duration_quantiles[0]   # min proxy
+            p25 = duration_quantiles[1]
+            p50 = duration_quantiles[2]  # median
+            p75 = duration_quantiles[3]
+            p95 = duration_quantiles[4]  # max proxy
+
+            # Check median vs min skew: p50 > 2 * p5
+            if p5 > 0 and p50 > 2 * p5:
+                skew_ratio = p50 / p5
+                self.recommendations.append(
+                    TuningRecommendation(
+                        category="Task Duration Skew",
+                        severity="high" if skew_ratio > 10 else "medium",
+                        title=f"Task Duration Skew (Median vs Min) in Stage {stage_id}",
+                        description=(
+                            f"Stage {stage_id} (attempt {attempt_id}, {num_tasks} tasks): "
+                            f"Median task duration ({p50:.0f}ms) is {skew_ratio:.1f}x the p5 duration ({p5:.0f}ms). "
+                            f"Distribution: p5={p5:.0f}ms, p25={p25:.0f}ms, p50={p50:.0f}ms, p75={p75:.0f}ms, p95={p95:.0f}ms."
+                        ),
+                        current_value=f"Median/Min ratio: {skew_ratio:.1f}x",
+                        recommended_action=(
+                            "Data is unevenly distributed across partitions. "
+                            "Consider repartitioning by a more evenly distributed key, "
+                            "enabling AQE skew join handling, or salting skewed keys."
+                        ),
+                        config_suggestion="spark.sql.adaptive.skewJoin.enabled=true; spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes=256m",
+                    )
+                )
+
+            # Check tail skew: p95 > 2 * p50
+            if p50 > 0 and p95 > 2 * p50:
+                tail_ratio = p95 / p50
+                self.recommendations.append(
+                    TuningRecommendation(
+                        category="Task Duration Skew",
+                        severity="high" if tail_ratio > 5 else "medium",
+                        title=f"Straggler Tasks (Tail Skew) in Stage {stage_id}",
+                        description=(
+                            f"Stage {stage_id} (attempt {attempt_id}, {num_tasks} tasks): "
+                            f"p95 task duration ({p95:.0f}ms) is {tail_ratio:.1f}x the median ({p50:.0f}ms). "
+                            f"The slowest tasks are significantly lagging behind the majority."
+                        ),
+                        current_value=f"p95/Median ratio: {tail_ratio:.1f}x",
+                        recommended_action=(
+                            "Tail tasks are processing disproportionately large partitions. "
+                            "Consider increasing partition count, enabling speculation for stragglers, "
+                            "or investigating data skew in join/group-by keys."
+                        ),
+                        config_suggestion="spark.speculation=true; spark.sql.shuffle.partitions (increase to reduce per-partition data)",
+                    )
+                )
+
+    def _analyze_partition_size(self) -> None:
+        """Detect excessive partition sizes based on task input metrics.
+        
+        Flags stages where the p75 or p95 input bytes per task exceeds 512 MB,
+        indicating that individual partitions are too large for efficient processing.
+        """
+        PARTITION_SIZE_THRESHOLD_BYTES = 512 * 1024 * 1024  # 512 MB
+
+        for summary in self.task_summary_metrics:
+            stage_id = summary.get("stageId", "?")
+            attempt_id = summary.get("attemptId", "0")
+            num_tasks = summary.get("numTasks", 0)
+
+            if num_tasks < 2:
+                continue
+
+            # Check input bytes (for read-heavy stages)
+            input_metrics = summary.get("inputMetrics", {})
+            input_bytes_quantiles = input_metrics.get("bytesRead", [])
+
+            # Check shuffle read bytes (for shuffle-heavy stages)
+            shuffle_read_metrics = summary.get("shuffleReadMetrics", {})
+            shuffle_read_quantiles = shuffle_read_metrics.get("readBytes", [])
+
+            # Evaluate input partition sizes
+            if len(input_bytes_quantiles) >= 5:
+                p75_input = input_bytes_quantiles[3]
+                p95_input = input_bytes_quantiles[4]
+                p50_input = input_bytes_quantiles[2]
+
+                if p95_input > PARTITION_SIZE_THRESHOLD_BYTES:
+                    p95_mb = p95_input / (1024 * 1024)
+                    p50_mb = p50_input / (1024 * 1024)
+                    self.recommendations.append(
+                        TuningRecommendation(
+                            category="Partition Sizing",
+                            severity="high" if p95_input > 1024 * 1024 * 1024 else "medium",
+                            title=f"Excessive Input Partition Size in Stage {stage_id}",
+                            description=(
+                                f"Stage {stage_id} (attempt {attempt_id}, {num_tasks} tasks): "
+                                f"p95 input size per task is {p95_mb:.0f} MB (median: {p50_mb:.0f} MB). "
+                                f"Partitions exceeding 512 MB can cause GC pressure, spill, and OOM risks."
+                            ),
+                            current_value=f"p95 input: {p95_mb:.0f} MB/task",
+                            recommended_action=(
+                                "Increase the number of partitions to reduce per-task data volume. "
+                                "For file scans, consider setting spark.sql.files.maxPartitionBytes. "
+                                "For shuffles, increase spark.sql.shuffle.partitions."
+                            ),
+                            config_suggestion="spark.sql.files.maxPartitionBytes=128m; spark.sql.shuffle.partitions (increase 2-4x)",
+                        )
+                    )
+                elif p75_input > PARTITION_SIZE_THRESHOLD_BYTES:
+                    p75_mb = p75_input / (1024 * 1024)
+                    self.recommendations.append(
+                        TuningRecommendation(
+                            category="Partition Sizing",
+                            severity="medium",
+                            title=f"Large Input Partitions in Stage {stage_id}",
+                            description=(
+                                f"Stage {stage_id}: p75 input size per task is {p75_mb:.0f} MB. "
+                                f"A significant portion of tasks are processing partitions near or above 512 MB."
+                            ),
+                            current_value=f"p75 input: {p75_mb:.0f} MB/task",
+                            recommended_action=(
+                                "Consider reducing max partition bytes or increasing partition count to keep "
+                                "task-level data below 256-512 MB for optimal memory utilization."
+                            ),
+                            config_suggestion="spark.sql.files.maxPartitionBytes=128m",
+                        )
+                    )
+
+            # Evaluate shuffle partition sizes
+            if len(shuffle_read_quantiles) >= 5:
+                p75_shuffle = shuffle_read_quantiles[3]
+                p95_shuffle = shuffle_read_quantiles[4]
+                p50_shuffle = shuffle_read_quantiles[2]
+
+                if p95_shuffle > PARTITION_SIZE_THRESHOLD_BYTES:
+                    p95_mb = p95_shuffle / (1024 * 1024)
+                    p50_mb = p50_shuffle / (1024 * 1024)
+                    self.recommendations.append(
+                        TuningRecommendation(
+                            category="Partition Sizing",
+                            severity="high" if p95_shuffle > 1024 * 1024 * 1024 else "medium",
+                            title=f"Excessive Shuffle Partition Size in Stage {stage_id}",
+                            description=(
+                                f"Stage {stage_id} (attempt {attempt_id}, {num_tasks} tasks): "
+                                f"p95 shuffle read per task is {p95_mb:.0f} MB (median: {p50_mb:.0f} MB). "
+                                f"Large shuffle partitions indicate skewed keys or insufficient partition count."
+                            ),
+                            current_value=f"p95 shuffle read: {p95_mb:.0f} MB/task",
+                            recommended_action=(
+                                "Increase spark.sql.shuffle.partitions, enable AQE coalescing, "
+                                "or investigate skewed join/group-by keys."
+                            ),
+                            config_suggestion="spark.sql.shuffle.partitions (increase 2-4x); spark.sql.adaptive.enabled=true",
+                        )
+                    )
+
+    def _analyze_processing_rate(self) -> None:
+        """Detect slow task processing rates.
+        
+        Flags stages where the effective processing rate (input MB / duration seconds)
+        falls below 1 MB/second at the median, indicating:
+        - Inefficient transformations or UDFs
+        - Excessive CPU overhead relative to data volume
+        - Network or I/O bottlenecks
+        
+        Only analyzes stages with >= MIN_TASKS tasks and median duration >= 1 second
+        to avoid noisy alerts from trivially small or short-lived stages.
+        """
+        RATE_THRESHOLD_MB_PER_SEC = 1.0  # 1 MB/s minimum expected throughput
+        MIN_TASKS = 50  # Minimum task count for statistically meaningful rate analysis
+        MIN_MEDIAN_DURATION_MS = 1000  # Ignore stages with median task duration < 1s
+
+        for summary in self.task_summary_metrics:
+            stage_id = summary.get("stageId", "?")
+            attempt_id = summary.get("attemptId", "0")
+            num_tasks = summary.get("numTasks", 0)
+            duration_quantiles = summary.get("duration", [])
+
+            if num_tasks < MIN_TASKS or len(duration_quantiles) < 5:
+                continue
+
+            # Get median duration (ms) and input bytes
+            p50_duration_ms = duration_quantiles[2]
+            if p50_duration_ms < MIN_MEDIAN_DURATION_MS:
+                continue
+
+            p50_duration_sec = p50_duration_ms / 1000.0
+
+            # Determine data volume: prefer input bytes, fall back to shuffle read
+            input_metrics = summary.get("inputMetrics", {})
+            input_bytes_quantiles = input_metrics.get("bytesRead", [])
+            shuffle_read_metrics = summary.get("shuffleReadMetrics", {})
+            shuffle_read_quantiles = shuffle_read_metrics.get("readBytes", [])
+
+            p50_input_bytes = 0
+            data_source = ""
+            if len(input_bytes_quantiles) >= 5 and input_bytes_quantiles[2] > 0:
+                p50_input_bytes = input_bytes_quantiles[2]
+                data_source = "input"
+            elif len(shuffle_read_quantiles) >= 5 and shuffle_read_quantiles[2] > 0:
+                p50_input_bytes = shuffle_read_quantiles[2]
+                data_source = "shuffle read"
+
+            if p50_input_bytes <= 0:
+                continue
+
+            p50_input_mb = p50_input_bytes / (1024 * 1024)
+            processing_rate_mb_s = p50_input_mb / p50_duration_sec
+
+            if processing_rate_mb_s < RATE_THRESHOLD_MB_PER_SEC:
+                self.recommendations.append(
+                    TuningRecommendation(
+                        category="Processing Rate",
+                        severity="high" if processing_rate_mb_s < 0.1 else "medium",
+                        title=f"Low Processing Rate in Stage {stage_id}",
+                        description=(
+                            f"Stage {stage_id} (attempt {attempt_id}, {num_tasks} tasks): "
+                            f"Median processing rate is {processing_rate_mb_s:.3f} MB/s "
+                            f"({data_source}: {p50_input_mb:.1f} MB median / {p50_duration_sec:.1f}s median duration). "
+                            f"Expected minimum: {RATE_THRESHOLD_MB_PER_SEC} MB/s."
+                        ),
+                        current_value=f"{processing_rate_mb_s:.3f} MB/s",
+                        recommended_action=(
+                            "Tasks are processing data too slowly. Potential causes: "
+                            "expensive UDFs or transformations, Python UDFs (consider Pandas UDFs), "
+                            "excessive object creation causing GC pressure, or I/O throttling. "
+                            "Profile the workload to identify CPU-bound operations."
+                        ),
+                        config_suggestion="Consider Photon engine, vectorized Pandas UDFs, or reducing transformation complexity",
                     )
                 )
 

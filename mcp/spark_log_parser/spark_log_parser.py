@@ -6,11 +6,13 @@ Parses raw Spark event logs (JSON Lines format) and extracts:
 - Job metrics
 - Stage metrics
 - SQL execution metrics
+- Task summary metrics (per-stage quantile distributions)
 
 Output schemas match the specified Spark DataFrame schemas.
 """
 
 import json
+import gzip
 import boto3
 import os
 from dataclasses import dataclass, field
@@ -224,6 +226,40 @@ def parse_stage_metrics_from_accumulables(
     return metrics
 
 
+def compute_quantiles(values: list[float], quantiles: list[float] = None) -> list[float]:
+    """Compute quantiles for a sorted list of values using linear interpolation.
+    
+    Matches Spark's TaskMetricDistributions quantile computation.
+    """
+    if quantiles is None:
+        quantiles = [0.05, 0.25, 0.5, 0.75, 0.95]
+    
+    if not values:
+        return [0.0] * len(quantiles)
+    
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    
+    result = []
+    for q in quantiles:
+        if n == 1:
+            result.append(float(sorted_values[0]))
+        else:
+            # Use linear interpolation (matching Spark's approach)
+            index = q * (n - 1)
+            lower = int(index)
+            upper = lower + 1
+            fraction = index - lower
+            
+            if upper >= n:
+                result.append(float(sorted_values[-1]))
+            else:
+                val = sorted_values[lower] + fraction * (sorted_values[upper] - sorted_values[lower])
+                result.append(float(val))
+    
+    return result
+
+
 def parse_sql_plan_nodes(plan_description: str) -> list[PlanNode]:
     """
     Parse plan description to extract node information.
@@ -337,14 +373,26 @@ class SparkLogParser:
         self._stage_first_completion: dict[str, int] = {}
         self._job_start_times: dict[str, int] = {}
         self._completed_job_statuses: dict[str, str] = {}
+        # Per-stage task-level metric collection for task summary computation
+        self._stage_task_metrics: dict[str, list[dict]] = {}
 
     def parse_file(self, obj_name: str, bucket_name: str, s3_client=None) -> None:
-        """Parse a single event log file."""
+        """Parse a single event log file (supports plain text and .gz compressed)."""
         if s3_client is None:
             s3_client = get_s3_client()
         
         response = s3_client.get_object(Bucket=bucket_name, Key=obj_name)
-        object_content = response['Body'].read().decode('utf-8')
+        raw_bytes = response['Body'].read()
+
+        # Decompress if gzip-compressed (by extension or magic bytes)
+        if obj_name.endswith('.gz') or raw_bytes[:2] == b'\x1f\x8b':
+            try:
+                raw_bytes = gzip.decompress(raw_bytes)
+            except (gzip.BadGzipFile, OSError) as e:
+                print(f"Warning: Failed to decompress {obj_name}: {e}")
+                return
+
+        object_content = raw_bytes.decode('utf-8')
 
         line_num = 0
         for line in object_content.splitlines():
@@ -687,7 +735,7 @@ class SparkLogParser:
         stage.numFailedTasks = float(task_counts.get("failed", 0))
 
     def _handle_task_end(self, event: dict) -> None:
-        """Handle SparkListenerTaskEnd event to track task counts."""
+        """Handle SparkListenerTaskEnd event to track task counts and collect per-task metrics."""
         stage_id = str(event.get("Stage ID", ""))
         attempt_id = str(event.get("Stage Attempt ID", "0"))
         stage_key = f"{stage_id}_{attempt_id}"
@@ -711,6 +759,128 @@ class SparkLogParser:
         elif task_info.get("Killed", False):
             counts["killed"] += 1
 
+        # Collect per-task metrics for task summary computation (only successful tasks)
+        if reason == "Success":
+            task_metrics = event.get("Task Metrics", {})
+            launch_time = task_info.get("Launch Time", 0)
+            finish_time = task_info.get("Finish Time", 0)
+            duration = finish_time - launch_time if (finish_time and launch_time) else 0
+            getting_result_time = task_info.get("Getting Result Time", 0)
+
+            # Extract core metrics matching tmptasksummary.json schema
+            executor_deserialize_time = task_metrics.get("Executor Deserialize Time", 0)
+            executor_deserialize_cpu_time = task_metrics.get("Executor Deserialize CPU Time", 0)
+            executor_run_time = task_metrics.get("Executor Run Time", 0)
+            executor_cpu_time = task_metrics.get("Executor CPU Time", 0)
+            result_size = task_metrics.get("Result Size", 0)
+            jvm_gc_time = task_metrics.get("JVM GC Time", 0)
+            result_serialization_time = task_metrics.get("Result Serialization Time", 0)
+            peak_execution_memory = task_metrics.get("Peak Execution Memory", 0)
+            memory_bytes_spilled = task_metrics.get("Memory Bytes Spilled", 0)
+            disk_bytes_spilled = task_metrics.get("Disk Bytes Spilled", 0)
+
+            # Compute scheduler delay: duration - executor_deserialize_time - executor_run_time
+            # - result_serialization_time - getting_result_time
+            scheduler_delay = max(0, duration - executor_deserialize_time - executor_run_time
+                                  - result_serialization_time - getting_result_time)
+
+            # Input metrics
+            input_metrics = task_metrics.get("Input Metrics", {})
+            input_bytes_read = input_metrics.get("Bytes Read", 0)
+            input_records_read = input_metrics.get("Records Read", 0)
+
+            # Output metrics
+            output_metrics = task_metrics.get("Output Metrics", {})
+            output_bytes_written = output_metrics.get("Bytes Written", 0)
+            output_records_written = output_metrics.get("Records Written", 0)
+
+            # Shuffle read metrics
+            shuffle_read = task_metrics.get("Shuffle Read Metrics", {})
+            shuffle_remote_bytes = shuffle_read.get("Remote Bytes Read", 0)
+            shuffle_local_bytes = shuffle_read.get("Local Bytes Read", 0)
+            shuffle_read_bytes = shuffle_remote_bytes + shuffle_local_bytes
+            shuffle_read_records = shuffle_read.get("Total Records Read", 0)
+            shuffle_remote_blocks = shuffle_read.get("Remote Blocks Fetched", 0)
+            shuffle_local_blocks = shuffle_read.get("Local Blocks Fetched", 0)
+            shuffle_fetch_wait_time = shuffle_read.get("Fetch Wait Time", 0)
+            shuffle_remote_bytes_to_disk = shuffle_read.get("Remote Bytes Read To Disk", 0)
+            shuffle_total_blocks = shuffle_remote_blocks + shuffle_local_blocks
+            shuffle_remote_reqs_duration = shuffle_read.get("Remote Requests Duration", 0)
+
+            # Push-based shuffle read metrics
+            push_based = shuffle_read.get("Push Based Shuffle", {})
+            corrupt_merged_block_chunks = push_based.get("Corrupt Merged Block Chunks", 0)
+            merged_fetch_fallback_count = push_based.get("Merged Fetch Fallback Count", 0)
+            remote_merged_blocks_fetched = push_based.get("Merged Remote Blocks Fetched", 0)
+            local_merged_blocks_fetched = push_based.get("Merged Local Blocks Fetched", 0)
+            remote_merged_chunks_fetched = push_based.get("Merged Remote Chunks Fetched", 0)
+            local_merged_chunks_fetched = push_based.get("Merged Local Chunks Fetched", 0)
+            remote_merged_bytes_read = push_based.get("Merged Remote Bytes Read", 0)
+            local_merged_bytes_read = push_based.get("Merged Local Bytes Read", 0)
+            remote_merged_reqs_duration = push_based.get("Merged Remote Requests Duration", 0)
+
+            # Shuffle write metrics
+            shuffle_write = task_metrics.get("Shuffle Write Metrics", {})
+            shuffle_write_bytes = shuffle_write.get("Shuffle Bytes Written", 0)
+            shuffle_write_records = shuffle_write.get("Shuffle Records Written", 0)
+            shuffle_write_time = shuffle_write.get("Shuffle Write Time", 0)
+
+            task_metric_record = {
+                "duration": duration,
+                "executorDeserializeTime": executor_deserialize_time,
+                "executorDeserializeCpuTime": executor_deserialize_cpu_time,
+                "executorRunTime": executor_run_time,
+                "executorCpuTime": executor_cpu_time,
+                "resultSize": result_size,
+                "jvmGcTime": jvm_gc_time,
+                "resultSerializationTime": result_serialization_time,
+                "gettingResultTime": getting_result_time,
+                "schedulerDelay": scheduler_delay,
+                "peakExecutionMemory": peak_execution_memory,
+                "memoryBytesSpilled": memory_bytes_spilled,
+                "diskBytesSpilled": disk_bytes_spilled,
+                "inputMetrics": {
+                    "bytesRead": input_bytes_read,
+                    "recordsRead": input_records_read,
+                },
+                "outputMetrics": {
+                    "bytesWritten": output_bytes_written,
+                    "recordsWritten": output_records_written,
+                },
+                "shuffleReadMetrics": {
+                    "readBytes": shuffle_read_bytes,
+                    "readRecords": shuffle_read_records,
+                    "remoteBlocksFetched": shuffle_remote_blocks,
+                    "localBlocksFetched": shuffle_local_blocks,
+                    "fetchWaitTime": shuffle_fetch_wait_time,
+                    "remoteBytesRead": shuffle_remote_bytes,
+                    "remoteBytesReadToDisk": shuffle_remote_bytes_to_disk,
+                    "totalBlocksFetched": shuffle_total_blocks,
+                    "remoteReqsDuration": shuffle_remote_reqs_duration,
+                    "shufflePushReadMetricsDist": {
+                        "corruptMergedBlockChunks": corrupt_merged_block_chunks,
+                        "mergedFetchFallbackCount": merged_fetch_fallback_count,
+                        "remoteMergedBlocksFetched": remote_merged_blocks_fetched,
+                        "localMergedBlocksFetched": local_merged_blocks_fetched,
+                        "remoteMergedChunksFetched": remote_merged_chunks_fetched,
+                        "localMergedChunksFetched": local_merged_chunks_fetched,
+                        "remoteMergedBytesRead": remote_merged_bytes_read,
+                        "localMergedBytesRead": local_merged_bytes_read,
+                        "remoteMergedReqsDuration": remote_merged_reqs_duration,
+                    },
+                },
+                "shuffleWriteMetrics": {
+                    "writeBytes": shuffle_write_bytes,
+                    "writeRecords": shuffle_write_records,
+                    "writeTime": shuffle_write_time,
+                },
+            }
+
+            if stage_key not in self._stage_task_metrics:
+                self._stage_task_metrics[stage_key] = []
+            self._stage_task_metrics[stage_key].append(task_metric_record)
+
+        # Continue tracking SQL accumulators (existing logic)
         accumulables = task_info.get("Accumulables", [])
         for acc in accumulables:
             if acc.get("Metadata") == "sql":
@@ -920,6 +1090,133 @@ class SparkLogParser:
             )
         return result
 
+    def get_task_summary_metrics(self) -> list[dict]:
+        """Compute per-stage task summary metrics as quantile distributions.
+        
+        Returns a list of dictionaries, one per stage, with the same schema as
+        Spark's REST API /stages/{stageId}/taskSummary endpoint (matching
+        tmptasksummary.json format).
+        
+        Quantiles computed: [0.05, 0.25, 0.5, 0.75, 0.95]
+        """
+        quantiles = [0.05, 0.25, 0.5, 0.75, 0.95]
+        results = []
+
+        for stage_key, task_records in self._stage_task_metrics.items():
+            if not task_records:
+                continue
+
+            stage_id, attempt_id = stage_key.split("_", 1)
+
+            # Collect scalar metric arrays
+            durations = [t["duration"] for t in task_records]
+            executor_deserialize_times = [t["executorDeserializeTime"] for t in task_records]
+            executor_deserialize_cpu_times = [t["executorDeserializeCpuTime"] for t in task_records]
+            executor_run_times = [t["executorRunTime"] for t in task_records]
+            executor_cpu_times = [t["executorCpuTime"] for t in task_records]
+            result_sizes = [t["resultSize"] for t in task_records]
+            jvm_gc_times = [t["jvmGcTime"] for t in task_records]
+            result_serialization_times = [t["resultSerializationTime"] for t in task_records]
+            getting_result_times = [t["gettingResultTime"] for t in task_records]
+            scheduler_delays = [t["schedulerDelay"] for t in task_records]
+            peak_execution_memories = [t["peakExecutionMemory"] for t in task_records]
+            memory_bytes_spilled = [t["memoryBytesSpilled"] for t in task_records]
+            disk_bytes_spilled = [t["diskBytesSpilled"] for t in task_records]
+
+            # Input metrics
+            input_bytes_read = [t["inputMetrics"]["bytesRead"] for t in task_records]
+            input_records_read = [t["inputMetrics"]["recordsRead"] for t in task_records]
+
+            # Output metrics
+            output_bytes_written = [t["outputMetrics"]["bytesWritten"] for t in task_records]
+            output_records_written = [t["outputMetrics"]["recordsWritten"] for t in task_records]
+
+            # Shuffle read metrics
+            shuffle_read_bytes = [t["shuffleReadMetrics"]["readBytes"] for t in task_records]
+            shuffle_read_records = [t["shuffleReadMetrics"]["readRecords"] for t in task_records]
+            shuffle_remote_blocks = [t["shuffleReadMetrics"]["remoteBlocksFetched"] for t in task_records]
+            shuffle_local_blocks = [t["shuffleReadMetrics"]["localBlocksFetched"] for t in task_records]
+            shuffle_fetch_wait = [t["shuffleReadMetrics"]["fetchWaitTime"] for t in task_records]
+            shuffle_remote_bytes = [t["shuffleReadMetrics"]["remoteBytesRead"] for t in task_records]
+            shuffle_remote_to_disk = [t["shuffleReadMetrics"]["remoteBytesReadToDisk"] for t in task_records]
+            shuffle_total_blocks = [t["shuffleReadMetrics"]["totalBlocksFetched"] for t in task_records]
+            shuffle_remote_reqs_dur = [t["shuffleReadMetrics"]["remoteReqsDuration"] for t in task_records]
+
+            # Push-based shuffle read
+            corrupt_merged = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["corruptMergedBlockChunks"] for t in task_records]
+            merged_fallback = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["mergedFetchFallbackCount"] for t in task_records]
+            remote_merged_blocks = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["remoteMergedBlocksFetched"] for t in task_records]
+            local_merged_blocks = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["localMergedBlocksFetched"] for t in task_records]
+            remote_merged_chunks = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["remoteMergedChunksFetched"] for t in task_records]
+            local_merged_chunks = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["localMergedChunksFetched"] for t in task_records]
+            remote_merged_bytes = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["remoteMergedBytesRead"] for t in task_records]
+            local_merged_bytes = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["localMergedBytesRead"] for t in task_records]
+            remote_merged_reqs_dur = [t["shuffleReadMetrics"]["shufflePushReadMetricsDist"]["remoteMergedReqsDuration"] for t in task_records]
+
+            # Shuffle write metrics
+            shuffle_write_bytes = [t["shuffleWriteMetrics"]["writeBytes"] for t in task_records]
+            shuffle_write_records = [t["shuffleWriteMetrics"]["writeRecords"] for t in task_records]
+            shuffle_write_time = [t["shuffleWriteMetrics"]["writeTime"] for t in task_records]
+
+            summary = {
+                "stageId": stage_id,
+                "attemptId": attempt_id,
+                "numTasks": len(task_records),
+                "quantiles": quantiles,
+                "duration": compute_quantiles(durations, quantiles),
+                "executorDeserializeTime": compute_quantiles(executor_deserialize_times, quantiles),
+                "executorDeserializeCpuTime": compute_quantiles(executor_deserialize_cpu_times, quantiles),
+                "executorRunTime": compute_quantiles(executor_run_times, quantiles),
+                "executorCpuTime": compute_quantiles(executor_cpu_times, quantiles),
+                "resultSize": compute_quantiles(result_sizes, quantiles),
+                "jvmGcTime": compute_quantiles(jvm_gc_times, quantiles),
+                "resultSerializationTime": compute_quantiles(result_serialization_times, quantiles),
+                "gettingResultTime": compute_quantiles(getting_result_times, quantiles),
+                "schedulerDelay": compute_quantiles(scheduler_delays, quantiles),
+                "peakExecutionMemory": compute_quantiles(peak_execution_memories, quantiles),
+                "memoryBytesSpilled": compute_quantiles(memory_bytes_spilled, quantiles),
+                "diskBytesSpilled": compute_quantiles(disk_bytes_spilled, quantiles),
+                "inputMetrics": {
+                    "bytesRead": compute_quantiles(input_bytes_read, quantiles),
+                    "recordsRead": compute_quantiles(input_records_read, quantiles),
+                },
+                "outputMetrics": {
+                    "bytesWritten": compute_quantiles(output_bytes_written, quantiles),
+                    "recordsWritten": compute_quantiles(output_records_written, quantiles),
+                },
+                "shuffleReadMetrics": {
+                    "readBytes": compute_quantiles(shuffle_read_bytes, quantiles),
+                    "readRecords": compute_quantiles(shuffle_read_records, quantiles),
+                    "remoteBlocksFetched": compute_quantiles(shuffle_remote_blocks, quantiles),
+                    "localBlocksFetched": compute_quantiles(shuffle_local_blocks, quantiles),
+                    "fetchWaitTime": compute_quantiles(shuffle_fetch_wait, quantiles),
+                    "remoteBytesRead": compute_quantiles(shuffle_remote_bytes, quantiles),
+                    "remoteBytesReadToDisk": compute_quantiles(shuffle_remote_to_disk, quantiles),
+                    "totalBlocksFetched": compute_quantiles(shuffle_total_blocks, quantiles),
+                    "remoteReqsDuration": compute_quantiles(shuffle_remote_reqs_dur, quantiles),
+                    "shufflePushReadMetricsDist": {
+                        "corruptMergedBlockChunks": compute_quantiles(corrupt_merged, quantiles),
+                        "mergedFetchFallbackCount": compute_quantiles(merged_fallback, quantiles),
+                        "remoteMergedBlocksFetched": compute_quantiles(remote_merged_blocks, quantiles),
+                        "localMergedBlocksFetched": compute_quantiles(local_merged_blocks, quantiles),
+                        "remoteMergedChunksFetched": compute_quantiles(remote_merged_chunks, quantiles),
+                        "localMergedChunksFetched": compute_quantiles(local_merged_chunks, quantiles),
+                        "remoteMergedBytesRead": compute_quantiles(remote_merged_bytes, quantiles),
+                        "localMergedBytesRead": compute_quantiles(local_merged_bytes, quantiles),
+                        "remoteMergedReqsDuration": compute_quantiles(remote_merged_reqs_dur, quantiles),
+                    },
+                },
+                "shuffleWriteMetrics": {
+                    "writeBytes": compute_quantiles(shuffle_write_bytes, quantiles),
+                    "writeRecords": compute_quantiles(shuffle_write_records, quantiles),
+                    "writeTime": compute_quantiles(shuffle_write_time, quantiles),
+                },
+            }
+
+            results.append(summary)
+
+        return results
+
 
 def main():
     """Main entry point for the parser."""
@@ -997,11 +1294,13 @@ def main():
     job_metrics = parser.get_job_metrics()
     stage_metrics = parser.get_stage_metrics()
     sql_metrics = parser.get_sql_metrics()
+    task_summary_metrics = parser.get_task_summary_metrics()
 
     print(f"\nExtracted metrics:")
     print(f"  - Jobs: {len(job_metrics)}")
     print(f"  - Stages: {len(stage_metrics)}")
     print(f"  - SQL Executions: {len(sql_metrics)}")
+    print(f"  - Task Summaries: {len(task_summary_metrics)}")
 
     #if args.format == "json":
     #    with open(output_dir / "job_metrics.json", "w") as f:
