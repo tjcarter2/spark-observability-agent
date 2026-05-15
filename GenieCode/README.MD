@@ -37,10 +37,10 @@ Automated approach:
 
 - Create service credential using [databricks_credential resource](https://registry.terraform.io/providers/databricks/databricks/latest/docs/resources/credential)
 
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/uno.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/dos.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/tres.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cuatro.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cinco.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/seis.png)
-(https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/siete.png)
+![uno](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/uno.png)
+![dos](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/dos.png)
+![tres](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/tres.png)
+![cuatro](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cuatro.png)
+![cinco](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/cinco.png)
+![seis](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/seis.png)
+![siete](https://github.com/tjcarter2/spark-observability-agent/blob/main/GenieCode/images/siete.png)
